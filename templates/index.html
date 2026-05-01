@@ -1,0 +1,1703 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Thesis Monitor</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:       #0d1117;
+      --surface:  #161b27;
+      --surface2: #1e2535;
+      --border:   #2a3148;
+      --accent:   #4f74f9;
+      --accent2:  #7c9dff;
+      --text:     #e2e8f0;
+      --muted:    #64748b;
+      --muted2:   #94a3b8;
+      --green:    #22c55e;
+      --amber:    #f59e0b;
+      --red:      #ef4444;
+      --radius:   8px;
+      --font:     'Inter','Segoe UI',system-ui,sans-serif;
+    }
+    html, body { height:100%; background:var(--bg); color:var(--text); font-family:var(--font); font-size:14px; line-height:1.6; }
+    .app-shell { display:flex; flex-direction:column; min-height:100vh; }
+
+    /* ── Header ── */
+    header { display:flex; align-items:center; gap:12px; padding:14px 28px; border-bottom:1px solid var(--border); background:var(--surface); flex-shrink:0; }
+    header .logo { font-size:18px; font-weight:700; letter-spacing:-.3px; white-space:nowrap; }
+    header .logo span { color:var(--accent2); }
+    header .sub { font-size:12px; color:var(--muted); margin-left:4px; }
+
+    /* ── Nav ── */
+    nav { display:flex; border-bottom:1px solid var(--border); background:var(--surface); padding:0 24px; overflow-x:auto; flex-shrink:0; }
+    nav::-webkit-scrollbar { height:0; }
+    nav button { background:none; border:none; cursor:pointer; padding:12px 16px; font-size:13px; font-weight:500; color:var(--muted2); border-bottom:2px solid transparent; transition:color .15s, border-color .15s; white-space:nowrap; flex-shrink:0; }
+    nav button.active { color:var(--accent2); border-bottom-color:var(--accent); }
+    nav button:hover:not(.active) { color:var(--text); }
+
+    main { flex:1; overflow-y:auto; padding:28px; }
+    .tab-panel { display:none; max-width:900px; margin:0 auto; }
+    .tab-panel.active { display:block; }
+
+    /* ── Typography ── */
+    .section-title { font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin-bottom:10px; }
+    .section-block { margin-bottom:24px; }
+
+    /* ── Forms ── */
+    .form-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+    .form-grid.three { grid-template-columns:1fr 1fr 1fr; }
+    .form-grid.four  { grid-template-columns:1fr 1fr 1fr 1fr; }
+    .form-grid.wide  { grid-template-columns:1fr; }
+    label { display:block; font-size:12px; color:var(--muted2); margin-bottom:5px; }
+    input[type="text"], input[type="number"], input[type="date"], textarea, select {
+      width:100%; background:var(--surface2); border:1px solid var(--border);
+      border-radius:var(--radius); color:var(--text); font-family:var(--font);
+      font-size:13px; padding:9px 12px; outline:none; transition:border-color .15s;
+    }
+    input:focus, textarea:focus, select:focus { border-color:var(--accent); }
+    input[readonly] { opacity:.7; cursor:default; }
+    textarea { resize:vertical; min-height:144px; }
+    input[type="date"]::-webkit-calendar-picker-indicator { filter:invert(.6); cursor:pointer; }
+    select option { background:var(--surface2); }
+
+    .prob-row { display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; }
+    .prob-field { flex:1; min-width:80px; }
+    .prob-field label { font-size:11px; }
+    .prob-hint { font-size:11px; color:var(--muted); padding-bottom:10px; white-space:nowrap; }
+    #prob-sum { font-weight:600; }
+
+    /* ── Buttons ── */
+    .btn { display:inline-flex; align-items:center; gap:7px; padding:10px 18px; border-radius:var(--radius); font-size:13px; font-weight:600; cursor:pointer; border:none; transition:opacity .15s, transform .1s; }
+    .btn:hover { opacity:.88; }
+    .btn:active { transform:scale(.98); }
+    .btn-primary   { background:var(--accent); color:#fff; }
+    .btn-secondary { background:var(--surface2); color:var(--text); border:1px solid var(--border); }
+    .btn-ghost     { background:transparent; color:var(--muted2); border:1px solid var(--border); }
+    .btn-green     { background:#166534; color:var(--green); border:1px solid #166534; }
+    .btn-red       { background:#7f1d1d; color:var(--red); border:1px solid #7f1d1d; }
+    .btn-danger    { background:transparent; color:var(--muted); border:1px solid var(--border); font-size:12px; padding:7px 13px; }
+    .btn-danger:hover { color:var(--red); border-color:var(--red); }
+    .btn:disabled  { opacity:.4; cursor:not-allowed; }
+    .btn-lg        { padding:12px 24px; font-size:14px; }
+    .btn-sm        { padding:6px 12px; font-size:12px; }
+
+    /* ── Cards ── */
+    .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:20px; }
+    .card + .card { margin-top:14px; }
+
+    /* ── Upload box ── */
+    .upload-zone {
+      border:1.5px dashed var(--border); border-radius:var(--radius);
+      padding:18px; text-align:center; cursor:pointer;
+      transition:border-color .2s, background .2s;
+    }
+    .upload-zone:hover { border-color:var(--accent); background:rgba(79,116,249,.04); }
+    .upload-zone.drag-over { border-color:var(--accent); background:rgba(79,116,249,.08); }
+    .upload-zone .uz-icon { font-size:22px; margin-bottom:6px; }
+    .upload-zone .uz-label { font-size:13px; color:var(--muted2); }
+    .upload-zone .uz-label span { color:var(--accent2); text-decoration:underline; cursor:pointer; }
+    .upload-zone .uz-sub { font-size:11px; color:var(--muted); margin-top:3px; }
+    .upload-zone input[type="file"] { display:none; }
+
+    .uploaded-file {
+      display:flex; align-items:center; gap:10px;
+      background:var(--surface2); border:1px solid var(--border);
+      border-radius:var(--radius); padding:10px 14px;
+    }
+    .uploaded-file .uf-icon { font-size:18px; }
+    .uploaded-file .uf-name { flex:1; font-size:13px; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .uploaded-file .uf-remove { background:none; border:none; cursor:pointer; color:var(--muted); font-size:16px; padding:2px 6px; flex-shrink:0; }
+    .uploaded-file .uf-remove:hover { color:var(--red); }
+
+    .or-divider { display:flex; align-items:center; gap:12px; margin:12px 0; color:var(--muted); font-size:12px; }
+    .or-divider::before, .or-divider::after { content:''; flex:1; height:1px; background:var(--border); }
+
+    /* ── Parse status ── */
+    .parse-status { font-size:12px; color:var(--muted2); margin-top:8px; min-height:18px; }
+    .parse-status.ok  { color:var(--green); }
+    .parse-status.err { color:var(--red); }
+
+    /* ── Collapsible ── */
+    .collapsible-header {
+      display:flex; align-items:center; justify-content:space-between;
+      cursor:pointer; user-select:none;
+      padding:12px 16px; background:var(--surface2);
+      border:1px solid var(--border); border-radius:var(--radius);
+      font-size:13px; font-weight:600; color:var(--text);
+    }
+    .collapsible-header:hover { background:#232b3e; }
+    .collapsible-arrow { font-size:12px; color:var(--muted); transition:transform .2s; }
+    .collapsible-arrow.open { transform:rotate(180deg); }
+    .collapsible-body { display:none; padding:16px; border:1px solid var(--border); border-top:none; border-radius:0 0 var(--radius) var(--radius); background:var(--surface); }
+    .collapsible-body.open { display:block; }
+
+    /* ── Price context (delta tab) ── */
+    .price-ctx { display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap; margin-bottom:20px; }
+    .price-ctx-field { flex:1; min-width:140px; max-width:200px; }
+    .price-badge { display:inline-flex; align-items:center; gap:5px; background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:9px 12px; font-size:13px; color:var(--muted2); align-self:flex-end; white-space:nowrap; }
+
+    /* ── Thesis banner (delta tab) ── */
+    .thesis-banner { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:16px 20px; margin-bottom:22px; }
+    .thesis-banner .ticker-line { font-size:16px; font-weight:700; flex-wrap:wrap; }
+    .thesis-banner .ticker-line span { color:var(--muted); font-weight:400; font-size:13px; margin-left:8px; }
+    .vp-row { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px; }
+    .vp-box { background:var(--surface2); border-radius:6px; padding:10px 12px; }
+    .vp-box .vp-label { font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; margin-bottom:4px; }
+    .vp-box .vp-text  { font-size:13px; color:var(--text); }
+    .drivers-row { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
+    .driver-chip { background:var(--surface2); border:1px solid var(--border); border-radius:20px; padding:4px 12px; font-size:12px; color:var(--muted2); }
+    .driver-chip strong { color:var(--accent2); margin-right:4px; }
+
+    /* ── Search term editor ── */
+    .query-editor { display:flex; flex-direction:column; gap:8px; margin-bottom:16px; }
+    .query-row { display:flex; align-items:center; gap:8px; }
+    .query-row .q-num { font-size:11px; color:var(--muted); width:18px; flex-shrink:0; text-align:right; }
+    .query-row input { flex:1; }
+    .query-row button { background:none; border:none; cursor:pointer; color:var(--muted); font-size:16px; padding:4px; flex-shrink:0; }
+    .query-row button:hover { color:var(--red); }
+    .add-query-btn { align-self:flex-start; }
+
+    /* ── Delta result ── */
+    .result-header { display:flex; align-items:center; gap:14px; margin-bottom:18px; flex-wrap:wrap; }
+    .materiality-badge { display:inline-flex; align-items:center; gap:6px; padding:6px 14px; border-radius:20px; font-size:13px; font-weight:700; }
+    .materiality-badge.material     { background:#1c3a27; color:var(--green); border:1px solid #166534; }
+    .materiality-badge.not-material { background:#1c2a3a; color:var(--accent2); border:1px solid var(--accent); }
+    .materiality-badge.uncertain    { background:#3a2f0a; color:var(--amber); border:1px solid #854d0e; }
+    .score-bar-wrap { flex:1; min-width:140px; }
+    .score-label { display:flex; justify-content:space-between; font-size:11px; color:var(--muted); margin-bottom:4px; }
+    .score-bar  { height:6px; background:var(--surface2); border-radius:3px; overflow:hidden; }
+    .score-fill { height:100%; border-radius:3px; transition:width .4s; }
+
+    .result-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+    .result-box { background:var(--surface2); border-radius:var(--radius); padding:14px; }
+    .result-box .rb-label { font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.07em; margin-bottom:6px; }
+    .result-box .rb-value { font-size:13px; color:var(--text); line-height:1.5; }
+    .result-box.full      { grid-column:span 2; }
+    .result-box.highlight { border-left:3px solid var(--accent); }
+    .result-box.warn      { border-left:3px solid var(--amber); }
+
+    .kill-switch-alert { display:flex; align-items:flex-start; gap:10px; background:#3a1a0a; border:1px solid #9a3412; border-radius:var(--radius); padding:12px 16px; margin-bottom:14px; }
+    .kill-switch-alert .ks-icon { font-size:18px; flex-shrink:0; }
+    .kill-switch-alert .ks-label { font-size:10px; color:var(--red); text-transform:uppercase; letter-spacing:.07em; margin-bottom:3px; }
+    .kill-switch-alert .ks-text  { font-size:13px; color:#fca9a9; line-height:1.5; }
+
+    .next-module-badge { display:inline-flex; align-items:center; gap:7px; background:#1a2040; border:1px solid var(--accent); border-radius:6px; padding:8px 14px; font-size:13px; color:var(--accent2); }
+
+    /* ── Sources with snippets ── */
+    .sources-list { list-style:none; }
+    .sources-list li { padding:8px 0; border-bottom:1px solid var(--border); }
+    .sources-list li:last-child { border-bottom:none; }
+    .src-title-row { display:flex; align-items:flex-start; gap:6px; }
+    .sources-list a { color:var(--accent2); text-decoration:none; font-size:12px; display:block; }
+    .sources-list a:hover { text-decoration:underline; }
+    .src-num { color:var(--muted); flex-shrink:0; font-size:11px; padding-top:1px; }
+    .src-snippet { font-size:11px; color:var(--muted); margin-top:3px; padding-left:20px; line-height:1.55; }
+    .src-snippet-toggle { font-size:11px; color:var(--accent2); background:none; border:none; cursor:pointer; padding:0; margin-left:20px; margin-top:2px; }
+    .src-snippet-toggle:hover { text-decoration:underline; }
+
+    .decision-row { display:flex; gap:10px; margin-top:16px; align-items:center; flex-wrap:wrap; }
+    .decision-row .dec-label { font-size:12px; color:var(--muted2); }
+    .decision-note { font-size:12px; color:var(--green); margin-left:4px; }
+
+    /* ── Spinner ── */
+    @keyframes spin { to { transform:rotate(360deg); } }
+    .spinner { width:16px; height:16px; border:2px solid rgba(255,255,255,.3); border-top-color:#fff; border-radius:50%; animation:spin .7s linear infinite; flex-shrink:0; }
+
+    /* ── Trail ── */
+    .trail-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:22px; flex-wrap:wrap; gap:10px; }
+    .trail-empty  { text-align:center; padding:60px 20px; color:var(--muted); }
+    .trail-item   { display:flex; gap:16px; margin-bottom:6px; }
+    .trail-line   { display:flex; flex-direction:column; align-items:center; flex-shrink:0; }
+    .trail-dot    { width:10px; height:10px; border-radius:50%; flex-shrink:0; margin-top:4px; }
+    .trail-dot.commit       { background:var(--accent); }
+    .trail-dot.delta-commit { background:var(--green); }
+    .trail-dot.check        { background:var(--amber); }
+    .trail-connector   { flex:1; width:1px; background:var(--border); margin-top:4px; }
+    .trail-body  { flex:1; padding-bottom:20px; min-width:0; }
+    .trail-ts    { font-size:11px; color:var(--muted); margin-bottom:4px; }
+    .trail-title { font-size:13px; font-weight:600; color:var(--text); margin-bottom:6px; word-break:break-word; }
+    .trail-card  { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:14px; }
+    .trail-card.commit-card       { border-left:3px solid var(--accent); }
+    .trail-card.delta-commit-card { border-left:3px solid var(--green); }
+    .trail-card.check-card        { border-left:3px solid var(--amber); }
+    .trail-kv    { display:grid; grid-template-columns:140px 1fr; gap:4px 12px; }
+    .trail-k     { font-size:11px; color:var(--muted); padding-top:1px; }
+    .trail-v     { font-size:12px; color:var(--text); word-break:break-word; }
+    .trail-mat   { display:inline-flex; align-items:center; gap:5px; font-size:12px; font-weight:600; }
+    .trail-mat.material     { color:var(--green); }
+    .trail-mat.not-material { color:var(--accent2); }
+    .trail-mat.uncertain    { color:var(--amber); }
+    .queries-list { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+    .query-pill   { background:var(--surface2); border:1px solid var(--border); border-radius:20px; padding:3px 10px; font-size:11px; color:var(--muted2); }
+
+    .no-thesis-notice { text-align:center; padding:48px 20px; color:var(--muted); background:var(--surface); border:1px dashed var(--border); border-radius:var(--radius); }
+
+    /* ── Star rating ── */
+    .star-row { display:flex; gap:6px; margin-top:4px; }
+    .star-btn { background:none; border:none; cursor:pointer; font-size:24px; padding:0 2px; color:var(--muted); transition:color .1s, transform .1s; line-height:1; }
+    .star-btn.active { color:var(--amber); }
+    .star-btn:hover  { transform:scale(1.2); }
+
+    /* ── Toast ── */
+    #toast { position:fixed; bottom:28px; right:28px; z-index:999; background:var(--surface2); border:1px solid var(--border); border-radius:var(--radius); padding:12px 18px; font-size:13px; color:var(--text); box-shadow:0 8px 30px rgba(0,0,0,.4); transform:translateY(20px); opacity:0; transition:transform .25s, opacity .25s; pointer-events:none; max-width:300px; }
+    #toast.show { transform:translateY(0); opacity:1; }
+
+    .confidence-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:5px; }
+    .divider { border:none; border-top:1px solid var(--border); margin:20px 0; }
+    .text-muted { color:var(--muted); }
+    .text-sm    { font-size:12px; }
+    .mt-2 { margin-top:8px; }
+    .mt-3 { margin-top:12px; }
+    .mt-4 { margin-top:16px; }
+    .gap-2 { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+
+    /* ─────────────────────────────────────────────
+       MOBILE RESPONSIVE
+    ───────────────────────────────────────────── */
+    @media (max-width: 768px) {
+      header { padding:12px 16px; }
+      main   { padding:16px; }
+      nav    { padding:0 8px; }
+      nav button { padding:10px 10px; font-size:12px; }
+
+      .form-grid,
+      .form-grid.three,
+      .form-grid.four  { grid-template-columns:1fr; }
+      .form-grid.two-col { grid-template-columns:1fr 1fr; }
+
+      .result-grid { grid-template-columns:1fr; }
+      .result-box.full { grid-column:span 1; }
+
+      .vp-row { grid-template-columns:1fr; }
+      .trail-kv { grid-template-columns:110px 1fr; }
+
+      .prob-row { gap:8px; }
+      .prob-field { min-width:70px; }
+
+      .trail-header { flex-direction:column; align-items:flex-start; }
+      .decision-row { flex-direction:column; align-items:flex-start; gap:8px; }
+      .result-header { flex-direction:column; align-items:flex-start; gap:10px; }
+      .score-bar-wrap { width:100%; }
+
+      .price-ctx { gap:8px; }
+      .price-ctx-field { max-width:100%; }
+
+      .collapsible-body { padding:12px; }
+      .card { padding:14px; }
+    }
+
+    @media (max-width: 480px) {
+      header .sub { display:none; }
+      header .logo { font-size:16px; }
+      .trail-kv { grid-template-columns:1fr; }
+      .trail-k  { font-weight:600; margin-top:6px; font-size:11px; }
+      .drivers-row { gap:6px; }
+      .driver-chip { font-size:11px; padding:3px 9px; }
+      .btn-lg { padding:11px 18px; font-size:13px; }
+      nav button { padding:9px 8px; font-size:11px; }
+    }
+  </style>
+</head>
+<body>
+<div class="app-shell">
+
+  <header>
+    <div class="logo">Thesis<span>Monitor</span></div>
+    <div class="sub">Versioned thesis · Delta detection · Research trail</div>
+  </header>
+
+  <nav>
+    <button class="active" onclick="switchTab('commit')">① Thesis Commit</button>
+    <button onclick="switchTab('delta')">② Delta Check</button>
+    <button onclick="switchTab('trail')">③ Research Trail</button>
+    <button onclick="switchTab('feedback')">④ Feedback</button>
+  </nav>
+
+  <main>
+
+    <!-- ══════════════════════════════════════════════════════════════
+         TAB 1 — THESIS COMMIT
+    ══════════════════════════════════════════════════════════════ -->
+    <div id="tab-commit" class="tab-panel active">
+
+      <!-- Top bar: danger action -->
+      <div style="display:flex; justify-content:flex-end; margin-bottom:14px;">
+        <button class="btn btn-danger" onclick="clearAllData()" title="Clear all thesis and delta check data — start fresh">
+          🗑 Clear All Data
+        </button>
+      </div>
+
+      <!-- Import section (collapsible) — unified: PDF/TXT/MD → auto-fill · JSON trail → full import -->
+      <div class="section-block">
+        <div class="collapsible-header" onclick="toggleCollapsible('import-body','import-arrow')">
+          <span>📥 Import thesis document or research trail</span>
+          <span class="collapsible-arrow" id="import-arrow">▼</span>
+        </div>
+        <div class="collapsible-body" id="import-body">
+          <p class="text-sm text-muted" style="margin-bottom:12px;">
+            Upload a <strong>PDF / TXT / MD</strong> to auto-fill the form via Groq, or upload a <strong>JSON trail</strong> to restore a previous session (including all history and a Groq-synthesised updated thesis).
+          </p>
+          <div class="upload-zone" id="import-upload-zone"
+               ondragover="onDragOver(event,'import-upload-zone')"
+               ondragleave="onDragLeave('import-upload-zone')"
+               ondrop="onDropImport(event)">
+            <input type="file" id="import-file-input" accept=".pdf,.txt,.md,.json"
+                   onchange="onImportFileSelected()" />
+            <div class="uz-icon">📄</div>
+            <div class="uz-label">
+              <span onclick="document.getElementById('import-file-input').click()">Click to upload</span> or drag &amp; drop
+            </div>
+            <div class="uz-sub">PDF / TXT / MD → auto-fills form &nbsp;·&nbsp; JSON trail → imports full history</div>
+          </div>
+          <div id="import-file-display" style="display:none;" class="mt-2"></div>
+
+          <div class="or-divider">or</div>
+
+          <label for="paste-text">Paste thesis text</label>
+          <textarea id="paste-text" style="min-height:180px;" placeholder="Paste your research note, thesis write-up, or any structured text here…"></textarea>
+
+          <div class="mt-2" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+            <button class="btn btn-secondary" id="btn-parse-import" onclick="parseOrImportInput()">
+              ✨ Auto-fill / Import
+            </button>
+            <span class="parse-status" id="parse-status"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Company -->
+      <div class="section-block">
+        <div class="section-title">Company</div>
+        <div class="form-grid two-col">
+          <div>
+            <label for="ticker">Ticker</label>
+            <input type="text" id="ticker" placeholder="e.g. BNZL.L" />
+          </div>
+          <div>
+            <label for="company">Company name</label>
+            <input type="text" id="company" placeholder="e.g. Bunzl plc" />
+          </div>
+          <div>
+            <label for="thesis-date">Thesis date</label>
+            <input type="date" id="thesis-date" />
+          </div>
+          <div>
+            <label for="valuation">Share price</label>
+            <div style="display:flex;gap:6px;align-items:stretch;">
+              <input type="text" id="valuation" placeholder="e.g. GBP 8.90" style="flex:1;" />
+              <button class="btn btn-ghost btn-sm" id="btn-fetch-commit-price"
+                      onclick="fetchLivePrice('valuation','btn-fetch-commit-price')"
+                      title="Fetch live price from Yahoo Finance" style="white-space:nowrap;">↗ Live</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Variant perception -->
+      <div class="section-block">
+        <div class="section-title">Variant Perception</div>
+        <div class="form-grid">
+          <div>
+            <label for="market-belief">What the market believes</label>
+            <textarea id="market-belief" placeholder="The market thinks margins are structurally under pressure from input cost inflation…"></textarea>
+          </div>
+          <div>
+            <label for="my-belief">What I believe</label>
+            <textarea id="my-belief" placeholder="I believe margins are more resilient than priced because of pass-through discipline and mix shift…"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <!-- Drivers -->
+      <div class="section-block">
+        <div class="section-title">Thesis Drivers</div>
+        <div class="form-grid wide">
+          <div><label for="driver1">Driver 1</label><textarea id="driver1" placeholder="e.g. Pass-through pricing discipline maintained across all geographies — explain the mechanism and why it is underappreciated"></textarea></div>
+          <div><label for="driver2">Driver 2</label><textarea id="driver2" placeholder="e.g. Mix shift toward higher-margin safety and healthcare categories — explain the mechanism and why it is underappreciated"></textarea></div>
+          <div><label for="driver3">Driver 3</label><textarea id="driver3" placeholder="e.g. Bolt-on M&A pipeline accretive to margins and returns — explain the mechanism and why it is underappreciated"></textarea></div>
+        </div>
+      </div>
+
+      <!-- Pricing & scenarios -->
+      <div class="section-block">
+        <div class="section-title">Pricing &amp; Scenarios</div>
+        <div>
+          <label for="what-is-priced">What is priced</label>
+          <textarea id="what-is-priced" placeholder="Market appears to be pricing ~2% margin compression in FY26 with no recovery. 14× EV/EBIT implies modest growth and flat margins through the cycle."></textarea>
+        </div>
+        <div class="mt-4">
+          <div class="prob-row">
+            <div class="prob-field"><label for="prob-bull">Bull %</label><input type="number" id="prob-bull" min="0" max="100" value="30" oninput="updateProbSum()" /></div>
+            <div class="prob-field"><label for="prob-base">Base %</label><input type="number" id="prob-base" min="0" max="100" value="50" oninput="updateProbSum()" /></div>
+            <div class="prob-field"><label for="prob-bear">Bear %</label><input type="number" id="prob-bear" min="0" max="100" value="20" oninput="updateProbSum()" /></div>
+            <div class="prob-hint">Sum: <span id="prob-sum">100</span>%</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Kill-switches -->
+      <div class="section-block">
+        <div class="section-title">Kill-Switches</div>
+        <label for="kill-switches">Conditions that would invalidate the thesis (one per line)</label>
+        <textarea id="kill-switches" style="min-height:176px"
+          placeholder="Gross margin falls below 14% for two consecutive half-year periods&#10;Management guides for structural, not cyclical, volume decline&#10;Competitor wins material market share in core UK segment"></textarea>
+      </div>
+
+      <!-- Watchlist & open questions -->
+      <div class="section-block">
+        <div class="section-title">Watchlist &amp; Open Questions</div>
+        <div class="form-grid">
+          <div>
+            <label for="watchlist">Watchlist — data points to monitor</label>
+            <textarea id="watchlist" placeholder="Monthly volume indices in UK distribution&#10;Peer pricing commentary (Wolseley, Ferguson)&#10;Healthcare category mix in next earnings"></textarea>
+          </div>
+          <div>
+            <label for="open-questions">Open questions</label>
+            <textarea id="open-questions" placeholder="How much of the margin resilience is structural vs. cyclical?&#10;What is the true M&A pipeline quality in North America?"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+        <button class="btn btn-primary btn-lg" onclick="commitThesis()">
+          <span>Commit Thesis</span>
+        </button>
+        <span id="commit-status" class="text-muted text-sm"></span>
+      </div>
+
+    </div><!-- /tab-commit -->
+
+
+    <!-- ══════════════════════════════════════════════════════════════
+         TAB 2 — DELTA CHECK
+    ══════════════════════════════════════════════════════════════ -->
+    <div id="tab-delta" class="tab-panel">
+
+      <!-- Current thesis banner -->
+      <div id="thesis-banner">
+        <div class="no-thesis-notice">
+          <div style="font-size:28px;margin-bottom:10px;">📋</div>
+          No thesis committed yet. Go to <strong>Thesis Commit</strong> first.
+        </div>
+      </div>
+
+      <!-- Search config (shown once thesis loaded) -->
+      <div id="delta-search-config" style="display:none;">
+
+        <!-- Price context -->
+        <div class="section-block">
+          <div class="section-title">Price Context</div>
+          <div class="price-ctx">
+            <div class="price-ctx-field">
+              <label>Share price (at thesis date)</label>
+              <input type="text" id="thesis-valuation-display" readonly placeholder="—" />
+            </div>
+            <div style="align-self:flex-end;padding-bottom:10px;color:var(--muted);font-size:18px;">→</div>
+            <div class="price-ctx-field">
+              <label for="current-price">Current price <span style="color:var(--muted)">(optional)</span></label>
+              <div style="display:flex;gap:6px;align-items:stretch;">
+                <input type="text" id="current-price" placeholder="e.g. £26.10" style="flex:1;" />
+                <button class="btn btn-ghost btn-sm" id="btn-fetch-delta-price"
+                        onclick="fetchLivePrice('current-price','btn-fetch-delta-price')"
+                        title="Fetch live price" style="white-space:nowrap;">↗ Live</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Editable search terms -->
+        <div class="section-block">
+          <div class="section-title">Search Terms — review and edit before running</div>
+          <div id="query-editor" class="query-editor"></div>
+          <button class="btn btn-ghost btn-sm add-query-btn" onclick="addQueryRow()">+ Add query</button>
+        </div>
+
+        <!-- PDF context upload (collapsible) -->
+        <div class="section-block">
+          <div class="collapsible-header" onclick="toggleCollapsible('pdf-ctx-body','pdf-ctx-arrow')">
+            <span>📎 Add PDF / doc as extra context (optional)</span>
+            <span class="collapsible-arrow" id="pdf-ctx-arrow">▼</span>
+          </div>
+          <div class="collapsible-body" id="pdf-ctx-body">
+            <p class="text-sm text-muted" style="margin-bottom:12px;">Uploaded content (earnings transcript, analyst note, filing) is injected <strong>first</strong> into the Groq prompt as highest-priority context — it will override web sources where there is a conflict. You can upload <strong>multiple files</strong>.</p>
+            <div class="upload-zone" id="ctx-upload-zone" style="max-width:480px;"
+                 ondragover="onDragOver(event,'ctx-upload-zone')"
+                 ondragleave="onDragLeave('ctx-upload-zone')"
+                 ondrop="onDropCtx(event)">
+              <input type="file" id="ctx-file-input" accept=".pdf,.txt" multiple
+                     onchange="onCtxFilesSelected()" />
+              <div class="uz-icon">📄</div>
+              <div class="uz-label"><span onclick="document.getElementById('ctx-file-input').click()">Upload PDF or TXT</span> — multiple files allowed</div>
+              <div class="uz-sub">Groq will prioritise these over web sources</div>
+            </div>
+            <div id="ctx-file-list" class="mt-2"></div>
+            <div id="ctx-extract-status" class="parse-status mt-2"></div>
+          </div>
+        </div>
+
+        <div style="display:flex; gap:14px; align-items:center; flex-wrap:wrap;">
+          <button class="btn btn-primary btn-lg" id="btn-search" onclick="runDeltaCheck()">
+            Search Latest Information
+          </button>
+          <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:13px;color:var(--muted2);">
+            <input type="checkbox" id="skip-web-search" style="width:auto;accent-color:var(--accent);" onchange="updateSearchHint()" />
+            Documents only (skip web search)
+          </label>
+          <span class="text-sm text-muted" id="search-mode-hint">Tavily retrieves sources · Groq evaluates materiality</span>
+        </div>
+      </div>
+
+      <div class="divider" id="delta-divider" style="display:none;"></div>
+
+      <!-- Results -->
+      <div id="delta-results"></div>
+
+    </div><!-- /tab-delta -->
+
+
+    <!-- ══════════════════════════════════════════════════════════════
+         TAB 3 — RESEARCH TRAIL
+    ══════════════════════════════════════════════════════════════ -->
+    <div id="tab-trail" class="tab-panel">
+      <div class="trail-header">
+        <h2 style="font-size:16px; font-weight:700;">Research Trail</h2>
+        <button class="btn btn-secondary" onclick="downloadTrail()">⬇ Download trail (JSON)</button>
+      </div>
+      <div id="trail-container">
+        <div class="trail-empty">
+          <div style="font-size:28px;margin-bottom:10px;">🗂</div>
+          No activity yet. Commit a thesis and run a delta check to begin your trail.
+        </div>
+      </div>
+    </div><!-- /tab-trail -->
+
+
+    <!-- ══════════════════════════════════════════════════════════════
+         TAB 4 — FEEDBACK
+    ══════════════════════════════════════════════════════════════ -->
+    <div id="tab-feedback" class="tab-panel">
+      <div style="max-width:580px; margin:0 auto;">
+        <div class="section-block" style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:10px;">
+          <div>
+            <h2 style="font-size:16px; font-weight:700; margin-bottom:6px;">Share Feedback</h2>
+            <p class="text-muted text-sm">Help improve Thesis Monitor. All feedback is stored privately on the server.</p>
+          </div>
+          <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
+            <a href="/api/feedback/export" class="btn btn-secondary btn-sm" style="text-decoration:none;" title="Download all feedback as CSV">
+              ⬇ Download CSV
+            </a>
+            <span id="fb-count" class="text-muted text-sm" style="font-size:11px;"></span>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="section-block">
+            <label for="fb-name">Your name <span class="text-muted">(optional)</span></label>
+            <input type="text" id="fb-name" placeholder="Anonymous" style="max-width:300px;" />
+          </div>
+
+          <div class="section-block">
+            <label for="fb-category">Category</label>
+            <select id="fb-category" style="max-width:300px;">
+              <option value="general">General Feedback</option>
+              <option value="bug">Bug Report</option>
+              <option value="feature">Feature Request</option>
+              <option value="ux">UX / Design</option>
+              <option value="analysis">Analysis Quality</option>
+            </select>
+          </div>
+
+          <div class="section-block">
+            <label>Rating</label>
+            <div class="star-row" id="fb-stars">
+              <button class="star-btn" data-val="1" onclick="setRating(1)">☆</button>
+              <button class="star-btn" data-val="2" onclick="setRating(2)">☆</button>
+              <button class="star-btn" data-val="3" onclick="setRating(3)">☆</button>
+              <button class="star-btn" data-val="4" onclick="setRating(4)">☆</button>
+              <button class="star-btn" data-val="5" onclick="setRating(5)">☆</button>
+            </div>
+          </div>
+
+          <div class="section-block">
+            <label for="fb-message">Message <span style="color:var(--red)">*</span></label>
+            <textarea id="fb-message" style="min-height:260px;" placeholder="What's working well? What could be improved? Any features you'd love to see?"></textarea>
+          </div>
+
+          <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+            <button class="btn btn-primary" onclick="submitFeedback()">Send Feedback</button>
+            <span id="fb-status" class="parse-status"></span>
+          </div>
+        </div>
+      </div>
+    </div><!-- /tab-feedback -->
+
+  </main>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let currentThesisId   = null;
+let currentCheckId    = null;
+let extraContextText  = "";
+let fbRating          = 0;
+
+// ── Tab navigation ─────────────────────────────────────────────────────────
+function switchTab(name) {
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  const idx = {commit:0, delta:1, trail:2, feedback:3}[name];
+  document.querySelectorAll('nav button')[idx].classList.add('active');
+  if (name === 'delta')    loadDeltaTab();
+  if (name === 'trail')    loadTrail();
+  if (name === 'feedback') loadFeedbackCount();
+}
+
+// ── Collapsible ────────────────────────────────────────────────────────────
+function toggleCollapsible(bodyId, arrowId) {
+  const body  = document.getElementById(bodyId);
+  const arrow = document.getElementById(arrowId);
+  const open  = body.classList.toggle('open');
+  if (arrow) arrow.classList.toggle('open', open);
+}
+
+// ── Probability sum ────────────────────────────────────────────────────────
+function updateProbSum() {
+  const sum = (parseFloat(document.getElementById('prob-bull').value)||0)
+            + (parseFloat(document.getElementById('prob-base').value)||0)
+            + (parseFloat(document.getElementById('prob-bear').value)||0);
+  const el  = document.getElementById('prob-sum');
+  el.textContent = sum;
+  el.style.color = sum === 100 ? 'var(--green)' : 'var(--red)';
+}
+updateProbSum();
+
+// ── Toast ──────────────────────────────────────────────────────────────────
+function toast(msg, dur=3500) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), dur);
+}
+
+// ── Upload zone drag-and-drop ──────────────────────────────────────────────
+function onDragOver(e, zoneId) {
+  e.preventDefault();
+  document.getElementById(zoneId).classList.add('drag-over');
+}
+function onDragLeave(zoneId) {
+  document.getElementById(zoneId).classList.remove('drag-over');
+}
+
+// ── Import drop zone (unified thesis doc / trail JSON) ─────────────────────
+function onDropImport(e) {
+  e.preventDefault();
+  document.getElementById('import-upload-zone').classList.remove('drag-over');
+  const file = e.dataTransfer.files[0];
+  if (!file) return;
+  const input = document.getElementById('import-file-input');
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  input.files = dt.files;
+  onImportFileSelected();
+}
+function onImportFileSelected() {
+  const input = document.getElementById('import-file-input');
+  if (!input.files || !input.files[0]) return;
+  const file = input.files[0];
+  const el   = document.getElementById('import-file-display');
+  el.style.display = 'flex';
+  el.className = 'uploaded-file';
+  const isJson = file.name.toLowerCase().endsWith('.json');
+  el.innerHTML = `
+    <span class="uf-icon">${isJson ? '🗂' : '📄'}</span>
+    <span class="uf-name">${esc(file.name)}</span>
+    <span style="font-size:11px;color:var(--accent2);margin-left:4px;">${isJson ? '(trail JSON)' : '(thesis doc)'}</span>
+    <button class="uf-remove" onclick="clearImportFile()">✕</button>`;
+  const btn = document.getElementById('btn-parse-import');
+  btn.textContent = isJson ? '📂 Import Full Trail' : '✨ Auto-fill from Document';
+}
+function clearImportFile() {
+  document.getElementById('import-file-input').value = '';
+  const el = document.getElementById('import-file-display');
+  el.style.display = 'none';
+  el.innerHTML = '';
+  document.getElementById('btn-parse-import').textContent = '✨ Auto-fill / Import';
+}
+
+// ── Context (delta) multi-file upload ─────────────────────────────────────
+let ctxFiles = []; // [{name, text}]
+
+function onDropCtx(e) {
+  e.preventDefault();
+  document.getElementById('ctx-upload-zone').classList.remove('drag-over');
+  const files = Array.from(e.dataTransfer.files);
+  addCtxFiles(files);
+}
+function onCtxFilesSelected() {
+  const input = document.getElementById('ctx-file-input');
+  if (!input.files || !input.files.length) return;
+  addCtxFiles(Array.from(input.files));
+  input.value = ''; // allow re-selecting same file later
+}
+async function addCtxFiles(files) {
+  const statusEl = document.getElementById('ctx-extract-status');
+  statusEl.textContent = `Processing ${files.length} file(s)…`;
+  statusEl.className = 'parse-status';
+  for (const f of files) {
+    if (ctxFiles.find(x => x.name === f.name)) continue; // skip duplicates
+    if (f.name.toLowerCase().endsWith('.txt')) {
+      const text = await f.text();
+      ctxFiles.push({name: f.name, text});
+    } else if (f.name.toLowerCase().endsWith('.pdf')) {
+      try {
+        const fd = new FormData(); fd.append('file', f);
+        const res  = await fetch('/api/extract-pdf-text', {method:'POST', body: fd});
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        ctxFiles.push({name: f.name, text: data.text});
+      } catch(e) {
+        statusEl.textContent = `Error extracting ${f.name}: ${e.message}`;
+        statusEl.className = 'parse-status err';
+        continue;
+      }
+    }
+  }
+  updateExtraContextText();
+  renderCtxFileList();
+  const total = ctxFiles.reduce((s,f) => s + f.text.length, 0);
+  statusEl.textContent = ctxFiles.length
+    ? `✓ ${ctxFiles.length} file(s) loaded (${total} chars) — injected as priority context`
+    : '';
+  statusEl.className = ctxFiles.length ? 'parse-status ok' : 'parse-status';
+}
+function removeCtxFile(name) {
+  ctxFiles = ctxFiles.filter(f => f.name !== name);
+  updateExtraContextText();
+  renderCtxFileList();
+  const statusEl = document.getElementById('ctx-extract-status');
+  if (!ctxFiles.length) { statusEl.textContent = ''; statusEl.className = 'parse-status'; }
+  else {
+    const total = ctxFiles.reduce((s,f) => s + f.text.length, 0);
+    statusEl.textContent = `✓ ${ctxFiles.length} file(s) loaded (${total} chars) — injected as priority context`;
+  }
+}
+function renderCtxFileList() {
+  const el = document.getElementById('ctx-file-list');
+  if (!ctxFiles.length) { el.innerHTML = ''; return; }
+  el.innerHTML = ctxFiles.map(f => `
+    <div class="uploaded-file" style="margin-bottom:6px;">
+      <span class="uf-icon">📄</span>
+      <span class="uf-name">${esc(f.name)}</span>
+      <span style="font-size:11px;color:var(--muted);margin-left:4px;">${f.text.length} chars</span>
+      <button class="uf-remove" onclick="removeCtxFile('${esc(f.name)}')">✕</button>
+    </div>`).join('');
+}
+function updateExtraContextText() {
+  extraContextText = ctxFiles.map(f => `[DOC: ${f.name}]\n${f.text}`).join('\n\n---\n\n');
+}
+
+// ── Unified parse-or-import handler ───────────────────────────────────────
+async function parseOrImportInput() {
+  const statusEl  = document.getElementById('parse-status');
+  const fileInput = document.getElementById('import-file-input');
+  const pasteText = document.getElementById('paste-text').value.trim();
+
+  if (!fileInput.files.length && !pasteText) {
+    statusEl.textContent = 'Upload a file or paste text first.';
+    statusEl.className = 'parse-status err';
+    return;
+  }
+
+  // If JSON file → import full trail
+  if (fileInput.files.length && fileInput.files[0].name.toLowerCase().endsWith('.json')) {
+    await importTrailFile(fileInput.files[0]);
+    return;
+  }
+
+  // Otherwise → parse document (PDF/TXT/MD or pasted text)
+  statusEl.textContent = 'Parsing with Groq…';
+  statusEl.className = 'parse-status';
+
+  const fd = new FormData();
+  if (fileInput.files.length) fd.append('file', fileInput.files[0]);
+  else fd.append('text', pasteText);
+
+  try {
+    const res  = await fetch('/api/parse-document', {method:'POST', body: fd});
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    fillFormFromFields(data.fields);
+    statusEl.textContent = '✓ Form auto-filled — review and edit before committing.';
+    statusEl.className = 'parse-status ok';
+    if (document.getElementById('import-body').classList.contains('open'))
+      toggleCollapsible('import-body','import-arrow');
+    toast('Form auto-filled from document');
+  } catch(e) {
+    statusEl.textContent = `Error: ${e.message}`;
+    statusEl.className = 'parse-status err';
+  }
+}
+
+function fillFormFromFields(f) {
+  const fill = (id, val) => {
+    if (val == null || val === 'null') return;
+    const el = document.getElementById(id);
+    if (el) el.value = val;
+  };
+  fill('ticker',         f.ticker);
+  fill('company',        f.company);
+  fill('thesis-date',    f.thesis_date);
+  fill('valuation',      f.valuation);
+  fill('market-belief',  f.market_belief);
+  fill('my-belief',      f.my_belief);
+  fill('driver1',        f.driver1);
+  fill('driver2',        f.driver2);
+  fill('driver3',        f.driver3);
+  fill('what-is-priced', f.what_is_priced);
+  if (f.prob_bull != null) fill('prob-bull', f.prob_bull);
+  if (f.prob_base != null) fill('prob-base', f.prob_base);
+  if (f.prob_bear != null) fill('prob-bear', f.prob_bear);
+  fill('kill-switches',  f.kill_switches);
+  fill('watchlist',      f.watchlist);
+  fill('open-questions', f.open_questions);
+  updateProbSum();
+}
+
+// ── Import full trail (JSON) ───────────────────────────────────────────────
+async function importTrailFile(file) {
+  const statusEl = document.getElementById('parse-status');
+  statusEl.textContent = 'Importing trail — synthesising with Groq…';
+  statusEl.className = 'parse-status';
+  const btn = document.getElementById('btn-parse-import');
+  btn.disabled = true;
+
+  const fd = new FormData();
+  fd.append('file', file);
+
+  try {
+    const res  = await fetch('/api/import-trail', {method:'POST', body: fd});
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    const t = data.thesis;
+    fillFormFromFields({
+      ticker: t.ticker, company: t.company, thesis_date: t.thesis_date,
+      valuation: t.valuation,
+      market_belief: t.market_belief, my_belief: t.my_belief,
+      driver1: t.driver1, driver2: t.driver2, driver3: t.driver3,
+      what_is_priced: t.what_is_priced,
+      prob_bull: t.prob_bull, prob_base: t.prob_base, prob_bear: t.prob_bear,
+      kill_switches: t.kill_switches, watchlist: t.watchlist,
+      open_questions: t.open_questions,
+    });
+    const acceptedCount = (data.accepted_updates || []).length;
+    const synthNote = acceptedCount
+      ? ` · Groq synthesised ${acceptedCount} accepted update(s) into the thesis`
+      : '';
+    statusEl.textContent = `✓ Imported ${data.imported_commits} thesis version(s) and ${data.imported_checks} delta check(s) from trail (max version: ${data.max_version})${synthNote}. Review form and commit.`;
+    statusEl.className = 'parse-status ok';
+    if (document.getElementById('import-body').classList.contains('open'))
+      toggleCollapsible('import-body','import-arrow');
+    toast(`Trail imported — ${data.imported_commits} commits, ${data.imported_checks} checks`);
+  } catch(e) {
+    statusEl.textContent = `Error: ${e.message}`;
+    statusEl.className = 'parse-status err';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── Commit thesis ──────────────────────────────────────────────────────────
+async function commitThesis() {
+  const ticker  = document.getElementById('ticker').value.trim();
+  const company = document.getElementById('company').value.trim();
+  if (!ticker || !company) { toast('Ticker and company name are required.'); return; }
+
+  const payload = {
+    ticker,
+    company,
+    thesis_date:    document.getElementById('thesis-date').value || null,
+    valuation:      document.getElementById('valuation').value.trim() || null,
+    market_belief:  document.getElementById('market-belief').value,
+    my_belief:      document.getElementById('my-belief').value,
+    driver1:        document.getElementById('driver1').value,
+    driver2:        document.getElementById('driver2').value,
+    driver3:        document.getElementById('driver3').value,
+    what_is_priced: document.getElementById('what-is-priced').value,
+    prob_bull:  parseFloat(document.getElementById('prob-bull').value)||0,
+    prob_base:  parseFloat(document.getElementById('prob-base').value)||0,
+    prob_bear:  parseFloat(document.getElementById('prob-bear').value)||0,
+    kill_switches:  document.getElementById('kill-switches').value,
+    watchlist:      document.getElementById('watchlist').value,
+    open_questions: document.getElementById('open-questions').value,
+  };
+
+  const statusEl = document.getElementById('commit-status');
+  statusEl.textContent = 'Saving…';
+
+  try {
+    const res  = await fetch('/api/thesis', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+    const data = await res.json();
+    currentThesisId = data.thesis_id;
+    statusEl.textContent = `✓ Thesis committed — saved as version #${data.thesis_id}`;
+    toast(`Thesis committed · v${data.thesis_id}`);
+    setTimeout(() => switchTab('delta'), 800);
+  } catch(e) {
+    statusEl.textContent = 'Error saving. Check console.';
+    console.error(e);
+  }
+}
+
+// ── Clear all data ─────────────────────────────────────────────────────────
+async function clearAllData() {
+  if (!confirm('Delete ALL thesis and delta check data and start fresh?\n\nThis cannot be undone.')) return;
+  try {
+    await fetch('/api/clear-trail', {method:'POST'});
+    currentThesisId  = null;
+    currentCheckId   = null;
+    extraContextText = '';
+    ctxFiles         = [];
+    // Clear form fields
+    ['ticker','company','thesis-date','valuation','market-belief','my-belief',
+     'driver1','driver2','driver3','what-is-priced','kill-switches','watchlist','open-questions','paste-text']
+      .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+    document.getElementById('prob-bull').value = 30;
+    document.getElementById('prob-base').value = 50;
+    document.getElementById('prob-bear').value = 20;
+    updateProbSum();
+    document.getElementById('commit-status').textContent = '';
+    document.getElementById('parse-status').textContent  = '';
+    document.getElementById('delta-results').innerHTML   = '';
+    document.getElementById('ctx-file-list').innerHTML   = '';
+    document.getElementById('ctx-extract-status').textContent = '';
+    clearImportFile();
+    document.getElementById('trail-container').innerHTML =
+      '<div class="trail-empty"><div style="font-size:28px;margin-bottom:10px;">🗂</div>No activity yet.</div>';
+    document.getElementById('delta-search-config').style.display = 'none';
+    document.getElementById('thesis-banner').innerHTML =
+      '<div class="no-thesis-notice"><div style="font-size:28px;margin-bottom:10px;">📋</div>No thesis committed yet. Go to <strong>Thesis Commit</strong> first.</div>';
+    toast('All data cleared. Ready for a new thesis.');
+  } catch(e) {
+    toast('Error clearing data: ' + e.message);
+    console.error(e);
+  }
+}
+
+// ── Delta tab ──────────────────────────────────────────────────────────────
+async function loadDeltaTab() {
+  try {
+    const res    = await fetch('/api/thesis/latest');
+    const thesis = await res.json();
+    if (!thesis) return;
+    currentThesisId = thesis.id;
+    renderThesisBanner(thesis);
+    populateQueryEditor(buildQueries(thesis));
+    // Pre-fill entry price display
+    const valEl = document.getElementById('thesis-valuation-display');
+    if (valEl) valEl.value = thesis.valuation || '';
+    document.getElementById('delta-search-config').style.display = 'block';
+    document.getElementById('delta-divider').style.display = 'block';
+    if (!document.getElementById('delta-results').innerHTML)
+      document.getElementById('delta-results').innerHTML = `
+        <div style="text-align:center;padding:40px 20px;color:var(--muted);">
+          <div style="font-size:28px;margin-bottom:10px;">🔍</div>
+          <p>Review the search terms above, then click <strong>Search Latest Information</strong>.</p>
+        </div>`;
+    // Auto-fetch current price if field is empty
+    const priceEl = document.getElementById('current-price');
+    if (thesis.ticker && priceEl && !priceEl.value.trim()) {
+      fetchLivePrice('current-price', 'btn-fetch-delta-price', /*silent=*/true);
+    }
+  } catch(e) { console.error(e); }
+}
+
+function renderThesisBanner(t) {
+  const dateStr = t.thesis_date ? ` · Thesis date: ${esc(t.thesis_date)}` : '';
+  const valStr  = t.valuation   ? ` · Entry: ${esc(t.valuation)}` : '';
+  document.getElementById('thesis-banner').innerHTML = `
+    <div class="thesis-banner">
+      <div class="ticker-line">
+        ${esc(t.ticker)}
+        <span>${esc(t.company)} · v${t.id}${dateStr}${valStr} · Committed: ${fmtDate(t.created_at)}</span>
+      </div>
+      <div class="vp-row">
+        <div class="vp-box"><div class="vp-label">Market believes</div><div class="vp-text">${esc(t.market_belief||'—')}</div></div>
+        <div class="vp-box"><div class="vp-label">I believe</div><div class="vp-text">${esc(t.my_belief||'—')}</div></div>
+      </div>
+      <div class="drivers-row">
+        ${[t.driver1,t.driver2,t.driver3].filter(Boolean).map((d,i)=>
+          `<div class="driver-chip"><strong>D${i+1}</strong>${esc(truncate(d,55))}</div>`).join('')}
+      </div>
+    </div>`;
+}
+
+// ── Query editor ───────────────────────────────────────────────────────────
+function buildQueries(t) {
+  const co  = t.company || '';
+  const tkr = (t.ticker || '').toUpperCase();
+  const yr  = new Date().getFullYear();
+  const yp  = yr - 1;
+  const yrs = `${yp} ${yr}`;
+
+  // Stop words for keyword extraction
+  const STOP = new Set([
+    'the','and','that','this','with','from','have','been','will','would',
+    'could','should','their','there','which','what','when','where','into',
+    'than','then','more','very','also','such','each','both','over','under',
+    'about','some','these','those','they','them','through','against','between',
+    'within','without','whether','because','however','therefore',
+  ]);
+
+  function kw(text, n=4) {
+    return (text||'').toLowerCase()
+      .replace(/[^\w\s]/g,' ')
+      .split(/\s+/)
+      .filter(w => w.length >= 4 && !STOP.has(w))
+      .filter((w,i,a) => a.indexOf(w) === i)   // deduplicate
+      .slice(0, n)
+      .join(' ');
+  }
+
+  // Exchange-specific filing terms
+  let filingQ, irQ;
+  if (tkr.endsWith('.L')) {
+    filingQ = `"${co}" site:londonstockexchange.com OR site:investegate.co.uk preliminary interim results trading update ${yrs}`;
+    irQ     = `"${co}" results announcement investor presentation annual report ${yrs}`;
+  } else if (tkr.endsWith('.SI')) {
+    filingQ = `"${co}" SGX announcement quarterly full year results ${yrs}`;
+    irQ     = `"${co}" investor presentation annual report results briefing ${yrs}`;
+  } else if (tkr.endsWith('.HK')) {
+    filingQ = `"${co}" HKEX interim annual results announcement ${yrs}`;
+    irQ     = `"${co}" investor presentation annual report ${yrs}`;
+  } else if (tkr.endsWith('.AX')) {
+    filingQ = `"${co}" ASX announcement half year full year results ${yrs}`;
+    irQ     = `"${co}" investor presentation annual report ${yrs}`;
+  } else if (!tkr.includes('.')) {
+    filingQ = `"${co}" earnings release quarterly results 10-Q 8-K SEC filing ${yrs}`;
+    irQ     = `"${co}" investor day capital markets day annual report ${yrs}`;
+  } else {
+    filingQ = `"${co}" results announcement quarterly annual ${yrs}`;
+    irQ     = `"${co}" investor presentation annual report ${yrs}`;
+  }
+
+  const queries = [
+    filingQ,
+    irQ,
+    `"${co}" earnings call transcript results call ${yrs}`,
+  ];
+
+  // Kill-switch — negative signal
+  const ksLine = (t.kill_switches||'').split('\n').find(l=>l.trim());
+  const ksKw   = kw(ksLine, 4);
+  queries.push(ksKw
+    ? `"${co}" ${ksKw} warning downgrade deterioration ${yr}`
+    : `"${co}" profit warning guidance cut revenue miss impairment ${yr}`
+  );
+
+  // Watchlist item
+  const wlLine = (t.watchlist||'').split('\n').find(l=>l.trim());
+  const wlKw   = kw(wlLine, 5);
+  if (wlKw) queries.push(`"${co}" ${wlKw} ${yr}`);
+
+  // Open question / adverse analyst view
+  const oqLine = (t.open_questions||'').split('\n').find(l=>l.trim());
+  const oqKw   = kw(oqLine, 4);
+  if (oqKw && queries.length < 6)
+    queries.push(`"${co}" ${oqKw} analyst report ${yr}`);
+
+  // Fallback if still under 6
+  if (queries.length < 6)
+    queries.push(`"${co}" credit rating downgrade analyst sell covenant breach ${yr}`);
+
+  return queries.filter(q => q.trim()).slice(0, 6);
+}
+
+function populateQueryEditor(queries) {
+  const el = document.getElementById('query-editor');
+  el.innerHTML = '';
+  queries.forEach((q, i) => addQueryRowWithValue(q, i+1));
+}
+
+function addQueryRow() {
+  const rows = document.querySelectorAll('.query-row');
+  addQueryRowWithValue('', rows.length + 1);
+}
+
+function addQueryRowWithValue(val, num) {
+  const el  = document.getElementById('query-editor');
+  const row = document.createElement('div');
+  row.className = 'query-row';
+  row.innerHTML = `
+    <span class="q-num">${num}</span>
+    <input type="text" value="${esc(val)}" placeholder="Enter a search query…" />
+    <button onclick="this.parentElement.remove(); renumberQueries();" title="Remove">✕</button>`;
+  el.appendChild(row);
+}
+
+function renumberQueries() {
+  document.querySelectorAll('.query-row').forEach((row, i) => {
+    const numEl = row.querySelector('.q-num');
+    if (numEl) numEl.textContent = i + 1;
+  });
+}
+
+function getQueries() {
+  return Array.from(document.querySelectorAll('.query-row input'))
+    .map(i => i.value.trim()).filter(Boolean);
+}
+
+// ── Skip-web hint update ───────────────────────────────────────────────────
+function updateSearchHint() {
+  const skip = document.getElementById('skip-web-search').checked;
+  document.getElementById('search-mode-hint').textContent = skip
+    ? 'Groq will analyse uploaded documents only — no web sources'
+    : 'Tavily retrieves sources · Groq evaluates materiality';
+}
+
+// ── Run delta check ────────────────────────────────────────────────────────
+async function runDeltaCheck() {
+  if (!currentThesisId) { toast('No thesis loaded.'); return; }
+
+  const btn = document.getElementById('btn-search');
+  const skipWeb = document.getElementById('skip-web-search').checked;
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner"></div><span>Analysing…</span>';
+  document.getElementById('delta-results').innerHTML = `
+    <div style="text-align:center;padding:40px 20px;color:var(--muted);">
+      <div style="font-size:28px;margin-bottom:10px;">⏳</div>
+      <p>${skipWeb ? 'Running Groq analysis on uploaded documents…' : 'Fetching sources via Tavily · Running Groq analysis…'}</p>
+    </div>`;
+
+  const payload = {
+    thesis_id:     currentThesisId,
+    queries:       getQueries(),
+    extra_context: extraContextText || "",
+    current_price: document.getElementById('current-price').value.trim() || "",
+    skip_web:      document.getElementById('skip-web-search').checked,
+    doc_names:     ctxFiles.map(f => f.name),
+  };
+
+  try {
+    const res  = await fetch('/api/delta-check', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    currentCheckId = data.check_id;
+    renderDeltaResult(data);
+  } catch(e) {
+    document.getElementById('delta-results').innerHTML = `<div class="card"><p style="color:var(--red)">Error: ${esc(e.message)}</p></div>`;
+    console.error(e);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<span>Search Latest Information</span>';
+  }
+}
+
+function renderDeltaResult(data) {
+  const r       = data.result;
+  const sources  = data.sources   || [];
+  const queries  = data.queries   || [];
+  const ragStats = data.rag_stats || null;
+  const thesisVal  = data.thesis_valuation || '';
+  const currPrice  = data.current_price    || '';
+
+  // RAG info banner (shown when uploaded docs were used)
+  const ragHtml = ragStats ? (() => {
+    if (ragStats.rag_applied) {
+      const pct = ragStats.words_in > 0
+        ? Math.round(ragStats.words_out / ragStats.words_in * 100) : 100;
+      return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;padding:8px 14px;background:rgba(79,116,249,.08);border:1px solid var(--accent);border-radius:var(--radius);font-size:12px;color:var(--accent2);">
+        <span>🔬</span>
+        <span><strong>RAG active</strong> — retrieved ${ragStats.chunks_used} of ${ragStats.chunks_total} chunks
+        (${ragStats.words_out.toLocaleString()} / ${ragStats.words_in.toLocaleString()} words, ${pct}%) from uploaded documents</span>
+      </div>`;
+    }
+    return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;padding:8px 14px;background:var(--surface2);border-radius:var(--radius);font-size:12px;color:var(--muted);">
+      <span>📄</span><span>Uploaded document was small — full text passed to model</span>
+    </div>`;
+  })() : '';
+
+  const matClass   = {'Material':'material','Not Material':'not-material','Uncertain':'uncertain'}[r.materiality] || 'uncertain';
+  const matIcon    = {'Material':'🔴','Not Material':'🟢','Uncertain':'🟡'}[r.materiality] || '⚪';
+  const scoreColor = r.materiality_score>=7 ? 'var(--red)' : r.materiality_score>=4 ? 'var(--amber)' : 'var(--green)';
+  const confDot    = {'High':'var(--green)','Medium':'var(--amber)','Low':'var(--red)'}[r.confidence] || 'var(--muted)';
+
+  const killHtml = r.kill_switch_triggered ? `
+    <div class="kill-switch-alert">
+      <div class="ks-icon">⚠️</div>
+      <div><div class="ks-label">Kill-Switch at Risk</div><div class="ks-text">${esc(r.kill_switch_triggered)}</div></div>
+    </div>` : '';
+
+  // Price context bar
+  const priceHtml = (thesisVal && thesisVal !== 'not recorded') || currPrice ? `
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px;padding:10px 14px;background:var(--surface2);border-radius:var(--radius);font-size:12px;">
+      <span style="color:var(--muted);">Share price at thesis:</span>
+      <strong>${esc(thesisVal || '—')}</strong>
+      <span style="color:var(--muted);margin:0 4px;">→</span>
+      <span style="color:var(--muted);">Current price:</span>
+      <strong style="color:var(--accent2);">${esc(currPrice || '—')}</strong>
+    </div>` : '';
+
+  // Sources with snippets
+  const sourcesHtml = sources.length ? `
+    <ul class="sources-list">
+      ${sources.map((s,i) => `
+        <li>
+          <div class="src-title-row">
+            <span class="src-num">[${i+1}]</span>
+            <a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title||s.url)}</a>
+          </div>
+          ${s.content ? `<div class="src-snippet">${esc(truncate(s.content, 220))}</div>` : ''}
+        </li>`).join('')}
+    </ul>` : '<p class="text-muted text-sm">No sources retrieved.</p>';
+
+  document.getElementById('delta-results').innerHTML = `
+    <div class="card">
+      <div class="result-header">
+        <div class="materiality-badge ${matClass}">${matIcon} ${esc(r.materiality)}</div>
+        <div class="score-bar-wrap">
+          <div class="score-label"><span>Materiality score</span><span style="color:${scoreColor};font-weight:700;">${r.materiality_score}/10</span></div>
+          <div class="score-bar"><div class="score-fill" style="width:${r.materiality_score*10}%;background:${scoreColor};"></div></div>
+        </div>
+        <div style="font-size:12px;color:var(--muted2);white-space:nowrap;">
+          <span class="confidence-dot" style="background:${confDot};"></span>${esc(r.confidence)} confidence
+        </div>
+      </div>
+
+      ${ragHtml}
+      ${priceHtml}
+      ${killHtml}
+
+      <div class="result-grid">
+        <div class="result-box highlight">
+          <div class="rb-label">Affected Driver</div>
+          <div class="rb-value">${esc(r.affected_driver||'None')}</div>
+        </div>
+        <div class="result-box">
+          <div class="rb-label">Overall Reasoning</div>
+          <div class="rb-value">${esc(r.reasoning||'—')}</div>
+        </div>
+        <div class="result-box full">
+          <div class="rb-label">Supporting Evidence</div>
+          <div class="rb-value">${esc(r.evidence_summary||'—')}</div>
+        </div>
+        <div class="result-box full warn">
+          <div class="rb-label">Contrary Evidence</div>
+          <div class="rb-value">${esc(r.contrary_evidence||'—')}</div>
+        </div>
+        <div class="result-box full highlight">
+          <div class="rb-label">Suggested Thesis Update</div>
+          <div class="rb-value">${esc(r.suggested_update||'No update needed')}</div>
+        </div>
+        <div class="result-box full">
+          <div class="rb-label">Suggested Next Module</div>
+          <div class="rb-value"><div class="next-module-badge">▶ ${esc(r.suggested_module||'No action needed')}</div></div>
+        </div>
+        ${data.tavily_error && !data.skip_web ? `
+        <div class="result-box full" style="border-color:var(--amber);">
+          <div class="rb-label" style="color:var(--amber);">⚠ Tavily web search failed — no sources retrieved</div>
+          <div class="rb-value" style="font-size:12px;color:var(--muted2);font-family:monospace;">${esc(data.tavily_error)}</div>
+          <div class="rb-value" style="font-size:12px;color:var(--muted);margin-top:6px;">Go to <a href="https://app.tavily.com" target="_blank" style="color:var(--accent2);">app.tavily.com</a> to get a valid API key, then update your <code>.env</code> file.</div>
+        </div>` : ''}
+        ${sources.length ? `
+        <div class="result-box full">
+          <div class="rb-label" style="cursor:pointer;user-select:none;display:flex;align-items:center;justify-content:space-between;"
+               onclick="toggleTavily()">
+            <span>🔍 Tavily Search Results (${sources.length} sources) — click to collapse</span>
+            <span id="raw-tavily-arrow" class="collapsible-arrow" style="transform:rotate(180deg);">▼</span>
+          </div>
+          <div id="raw-tavily-body" style="display:block;padding-top:10px;">
+            ${sources.map((s,i) => `
+              <div style="border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;margin-bottom:10px;background:var(--surface2);">
+                <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:4px;">
+                  <span style="font-size:12px;font-weight:700;color:var(--muted);flex-shrink:0;">[${i+1}]</span>
+                  <span style="font-weight:600;font-size:13px;">${esc(s.title||'Untitled')}</span>
+                  <span style="font-size:11px;color:var(--muted);margin-left:auto;flex-shrink:0;">score ${(s.score||0).toFixed(2)}</span>
+                </div>
+                <div style="margin-bottom:8px;">
+                  <a href="${esc(s.url)}" target="_blank" rel="noopener"
+                     style="color:var(--accent2);font-size:11px;word-break:break-all;">${esc(s.url)}</a>
+                </div>
+                ${s.content
+                  ? `<div style="font-size:12px;color:var(--muted2);white-space:pre-wrap;line-height:1.65;border-top:1px solid var(--border);padding-top:8px;">${esc(s.content)}</div>`
+                  : `<div style="font-size:12px;color:var(--muted);font-style:italic;">No content returned by Tavily.</div>`}
+              </div>`).join('')}
+          </div>
+        </div>` : ''}
+        <div class="result-box full">
+          <div class="rb-label">Search Queries Used</div>
+          <div class="queries-list">${queries.map(q=>`<span class="query-pill">${esc(q)}</span>`).join('')}</div>
+        </div>
+      </div>
+
+      <div class="decision-row">
+        <span class="dec-label">Log decision on suggested update:</span>
+        <button class="btn btn-green" id="btn-accept" onclick="recordDecision('accepted')">✓ Accept</button>
+        <button class="btn btn-red"   id="btn-reject" onclick="recordDecision('rejected')">✗ Reject</button>
+        <span id="decision-note" class="decision-note"></span>
+      </div>
+    </div>`;
+}
+
+async function recordDecision(decision) {
+  if (!currentCheckId) return;
+  const decNote  = document.getElementById('decision-note');
+  const btnAccept = document.getElementById('btn-accept');
+  const btnReject = document.getElementById('btn-reject');
+  btnAccept.disabled = true;
+  btnReject.disabled = true;
+
+  try {
+    if (decision === 'accepted') {
+      decNote.textContent = 'Synthesising updated thesis…';
+      const res  = await fetch(`/api/delta-check/${currentCheckId}/accept-and-update`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
+      });
+      // Guard: server may return HTML on 500 — parse safely
+      const ct = res.headers.get('content-type') || '';
+      if (!ct.includes('application/json')) {
+        const text = await res.text();
+        throw new Error(`Server error (${res.status}): ${text.slice(0,200)}`);
+      }
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      if (data.synthesis_error) {
+        toast(`⚠ Thesis synthesis failed: ${data.synthesis_error} — decision still logged.`);
+      }
+      if (data.new_thesis_id) {
+        currentThesisId = data.new_thesis_id;
+        decNote.textContent = `✓ Update accepted · Thesis updated to v${data.version}`;
+        toast(`Update accepted · New thesis v${data.version} committed — opening Research Trail…`);
+      } else {
+        decNote.textContent = '✓ Update accepted and logged';
+        toast('Update accepted — opening Research Trail…');
+      }
+      setTimeout(() => switchTab('trail'), 1400);
+    } else {
+      await fetch(`/api/delta-check/${currentCheckId}/decision`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({decision})
+      });
+      decNote.textContent = '✗ Update rejected and logged';
+      toast('Update rejected — thesis unchanged.');
+    }
+  } catch(e) {
+    decNote.textContent = `Error: ${e.message}`;
+    btnAccept.disabled = false;
+    btnReject.disabled = false;
+    console.error(e);
+  }
+}
+
+// ── Research Trail ─────────────────────────────────────────────────────────
+async function loadTrail() {
+  const el = document.getElementById('trail-container');
+  try {
+    const res = await fetch('/api/trail');
+    const ct  = res.headers.get('content-type') || '';
+    if (!ct.includes('application/json')) {
+      const text = await res.text();
+      throw new Error(`Trail API error (${res.status}): ${text.slice(0, 300)}`);
+    }
+    const items = await res.json();
+    if (!Array.isArray(items)) throw new Error('Unexpected response from trail API');
+    renderTrail(items);
+  } catch(e) {
+    console.error('loadTrail error:', e);
+    el.innerHTML = `<div class="trail-empty" style="color:var(--red);">
+      <div style="font-size:24px;margin-bottom:8px;">⚠</div>
+      <strong>Could not load trail</strong><br>
+      <span style="font-size:12px;">${esc(e.message)}</span>
+    </div>`;
+  }
+}
+
+function renderTrail(items) {
+  const el = document.getElementById('trail-container');
+  if (!items.length) {
+    el.innerHTML = '<div class="trail-empty"><div style="font-size:28px;margin-bottom:10px;">🗂</div>No activity yet.</div>';
+    return;
+  }
+
+  el.innerHTML = items.map((item, idx) => {
+    const isLast = idx === items.length - 1;
+
+    if (item.type === 'thesis_commit') {
+      const isFromDelta = !!item.delta_check_id;
+      const valLine = item.valuation
+        ? `<span class="trail-k">Entry price</span><span class="trail-v">${esc(item.valuation)}</span>` : '';
+      const commitIcon  = isFromDelta ? '🔄' : '📋';
+      const commitLabel = isFromDelta
+        ? `Thesis Updated from Delta Check — ${esc(item.ticker)} · ${esc(item.company)} · v${item.id}`
+        : `Thesis Committed — ${esc(item.ticker)} · ${esc(item.company)} · v${item.id}`;
+      const dotClass = isFromDelta ? 'commit delta-commit' : 'commit';
+      return `
+        <div class="trail-item">
+          <div class="trail-line">
+            <div class="trail-dot ${dotClass}"></div>
+            ${!isLast ? '<div class="trail-connector"></div>' : ''}
+          </div>
+          <div class="trail-body">
+            <div class="trail-ts">${fmtDate(item.created_at)}</div>
+            <div class="trail-title">${commitIcon} ${commitLabel}${item.thesis_date ? ' · '+esc(item.thesis_date) : ''}</div>
+            <div class="trail-card ${isFromDelta ? 'delta-commit-card' : 'commit-card'}">
+              <div class="trail-kv">
+                ${valLine}
+                <span class="trail-k">Market believes</span><span class="trail-v">${esc(item.market_belief||'—')}</span>
+                <span class="trail-k">I believe</span><span class="trail-v">${esc(item.my_belief||'—')}</span>
+                <span class="trail-k">Driver 1</span><span class="trail-v">${esc(item.driver1||'—')}</span>
+                <span class="trail-k">Driver 2</span><span class="trail-v">${esc(item.driver2||'—')}</span>
+                <span class="trail-k">Driver 3</span><span class="trail-v">${esc(item.driver3||'—')}</span>
+                <span class="trail-k">Scenarios</span><span class="trail-v">Bull ${item.prob_bull}% / Base ${item.prob_base}% / Bear ${item.prob_bear}%</span>
+                <span class="trail-k">Kill-switches</span><span class="trail-v">${esc(item.kill_switches||'—')}</span>
+                ${item.open_questions ? `<span class="trail-k">Open questions</span><span class="trail-v">${esc(item.open_questions)}</span>` : ''}
+              </div>
+            </div>
+          </div>
+        </div>`;
+    }
+
+    if (item.type === 'delta_check') {
+      const matClass  = {'Material':'material','Not Material':'not-material','Uncertain':'uncertain'}[item.materiality]||'uncertain';
+      const queries   = safeJson(item.search_queries, []);
+      const sources   = safeJson(item.sources, []);
+      const docNames  = safeJson(item.doc_names, []);
+      const skipWeb   = !!item.skip_web;
+      const decLine   = item.user_decision ? `
+        <span class="trail-k">Decision</span>
+        <span class="trail-v" style="color:${item.user_decision==='accepted'?'var(--green)':'var(--red)'}">
+          ${item.user_decision==='accepted'?'✓ Update accepted':'✗ Update rejected'}
+        </span>` : '';
+      const ksLine    = item.kill_switch_triggered ? `
+        <span class="trail-k">⚠ Kill-switch</span>
+        <span class="trail-v" style="color:var(--amber)">${esc(item.kill_switch_triggered)}</span>` : '';
+      const priceLine = item.current_price ? `
+        <span class="trail-k">Price at check</span>
+        <span class="trail-v">${esc(item.current_price)}</span>` : '';
+
+      // Documents used section (replaces or supplements search queries)
+      const docsHtml = docNames.length ? `
+        <div class="mt-2">
+          <div class="section-title" style="margin-bottom:4px;">Documents used (${docNames.length})</div>
+          <div class="queries-list">${docNames.map(n=>`<span class="query-pill" style="background:rgba(79,116,249,.12);color:var(--accent2);">📄 ${esc(n)}</span>`).join('')}</div>
+        </div>` : '';
+
+      // Search queries section — hidden if skip_web (documents only mode)
+      const queriesHtml = !skipWeb && queries.length ? `
+        <div class="mt-2">
+          <div class="section-title" style="margin-bottom:4px;">Search queries</div>
+          <div class="queries-list">${queries.map(q=>`<span class="query-pill">${esc(q)}</span>`).join('')}</div>
+        </div>` : '';
+
+      const modeLabel = skipWeb
+        ? `<span style="font-size:11px;color:var(--accent2);margin-left:6px;">📄 Documents only</span>`
+        : '';
+
+      return `
+        <div class="trail-item">
+          <div class="trail-line">
+            <div class="trail-dot check"></div>
+            ${!isLast ? '<div class="trail-connector"></div>' : ''}
+          </div>
+          <div class="trail-body">
+            <div class="trail-ts">${fmtDate(item.created_at)}</div>
+            <div class="trail-title">🔍 Delta Check — against thesis v${item.thesis_id}${modeLabel}</div>
+            <div class="trail-card check-card">
+              <div class="trail-kv">
+                <span class="trail-k">Materiality</span>
+                <span class="trail-v"><span class="trail-mat ${matClass}">${esc(item.materiality||'—')} (${item.materiality_score}/10)</span></span>
+                ${priceLine}
+                <span class="trail-k">Affected driver</span><span class="trail-v">${esc(item.affected_driver||'—')}</span>
+                ${ksLine}
+                <span class="trail-k">Supporting evidence</span><span class="trail-v">${esc(item.evidence_summary||'—')}</span>
+                <span class="trail-k">Contrary evidence</span><span class="trail-v">${esc(item.contrary_evidence||'—')}</span>
+                <span class="trail-k">Suggested update</span><span class="trail-v">${esc(item.suggested_update||'—')}</span>
+                <span class="trail-k">Next module</span><span class="trail-v">${esc(item.suggested_module||'—')}</span>
+                <span class="trail-k">Confidence</span><span class="trail-v">${esc(item.confidence||'—')}</span>
+                ${decLine}
+              </div>
+              ${docsHtml}
+              ${queriesHtml}
+              ${sources.length ? `
+              <div class="mt-2">
+                <div class="section-title" style="margin-bottom:4px;">Sources (${sources.length})</div>
+                <ul class="sources-list">
+                  ${sources.slice(0,5).map((s,i)=>`
+                    <li>
+                      <div class="src-title-row">
+                        <span class="src-num">[${i+1}]</span>
+                        <a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title||s.url)}</a>
+                      </div>
+                      ${s.content ? `<div class="src-snippet">${esc(s.content)}</div>` : ''}
+                    </li>`).join('')}
+                </ul>
+              </div>` : ''}
+            </div>
+          </div>
+        </div>`;
+    }
+    return '';
+  }).join('');
+}
+
+// ── Download trail ─────────────────────────────────────────────────────────
+function downloadTrail() {
+  window.location.href = '/api/trail/export';
+}
+
+// ── Star rating (feedback tab) ─────────────────────────────────────────────
+function setRating(val) {
+  fbRating = val;
+  document.querySelectorAll('.star-btn').forEach(btn => {
+    const bv = parseInt(btn.dataset.val);
+    btn.textContent = bv <= val ? '★' : '☆';
+    btn.classList.toggle('active', bv <= val);
+  });
+}
+
+// ── Feedback count (shown when tab opens) ──────────────────────────────────
+async function loadFeedbackCount() {
+  try {
+    const res  = await fetch('/api/feedback/count');
+    const data = await res.json();
+    const el   = document.getElementById('fb-count');
+    if (el && typeof data.count === 'number') {
+      el.textContent = data.count === 0
+        ? 'No responses yet'
+        : `${data.count} response${data.count === 1 ? '' : 's'} stored`;
+    }
+  } catch(e) { /* non-critical */ }
+}
+
+// ── Submit feedback ────────────────────────────────────────────────────────
+async function submitFeedback() {
+  const message  = document.getElementById('fb-message').value.trim();
+  const statusEl = document.getElementById('fb-status');
+
+  if (!message) {
+    statusEl.textContent = 'Please enter a message.';
+    statusEl.className = 'parse-status err';
+    return;
+  }
+
+  statusEl.textContent = 'Sending…';
+  statusEl.className = 'parse-status';
+
+  const payload = {
+    name:     document.getElementById('fb-name').value.trim() || 'Anonymous',
+    category: document.getElementById('fb-category').value,
+    rating:   fbRating || null,
+    message,
+  };
+
+  try {
+    const res  = await fetch('/api/feedback', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+    const data = await res.json();
+    if (!data.success) throw new Error('Server error');
+    statusEl.textContent = '✓ Feedback sent — thank you!';
+    statusEl.className = 'parse-status ok';
+    document.getElementById('fb-message').value = '';
+    document.getElementById('fb-name').value = '';
+    document.getElementById('fb-category').value = 'general';
+    setRating(0);
+    toast('Thanks for your feedback!');
+  } catch(e) {
+    statusEl.textContent = `Error: ${e.message}`;
+    statusEl.className = 'parse-status err';
+  }
+}
+
+// ── Tavily result toggle ───────────────────────────────────────────────────
+function toggleTavily() {
+  const body  = document.getElementById('raw-tavily-body');
+  const arrow = document.getElementById('raw-tavily-arrow');
+  if (!body) return;
+  const isOpen = body.style.display !== 'none';
+  body.style.display = isOpen ? 'none' : 'block';
+  if (arrow) arrow.style.transform = isOpen ? 'rotate(0deg)' : 'rotate(180deg)';
+}
+
+// ── Live price fetch ───────────────────────────────────────────────────────
+async function fetchLivePrice(targetFieldId, btnId, silent=false) {
+  // Determine ticker — from the thesis commit form, or from loaded thesis
+  let ticker = (document.getElementById('ticker') || {}).value || '';
+  if (!ticker && currentThesisId) {
+    try {
+      const res = await fetch('/api/thesis/latest');
+      const t   = await res.json();
+      ticker = t ? t.ticker : '';
+    } catch(e) {}
+  }
+  if (!ticker) {
+    if (!silent) toast('Enter a ticker symbol first.');
+    return;
+  }
+
+  const btn   = document.getElementById(btnId);
+  const field = document.getElementById(targetFieldId);
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+
+  try {
+    const res  = await fetch(`/api/fetch-price/${encodeURIComponent(ticker)}`);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    if (field) field.value = data.price;
+    if (!silent) toast(`Live price: ${data.price}`);
+  } catch(e) {
+    if (!silent) toast(`Price fetch failed: ${e.message}`);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '↗ Live'; }
+  }
+}
+
+// ── Utilities ──────────────────────────────────────────────────────────────
+function esc(str) {
+  return String(str||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function truncate(str, n) {
+  str = str||''; return str.length>n ? str.slice(0,n)+'…' : str;
+}
+function fmtDate(iso) {
+  if (!iso) return '';
+  try {
+    // Python isoformat produces +00:00; normalise to Z for JS compatibility
+    const s = iso.replace(/\+00:00$/, 'Z');
+    return new Date(s).toLocaleString('en-GB',{
+      day:'2-digit', month:'short', year:'numeric',
+      hour:'2-digit', minute:'2-digit'
+    });
+  } catch { return iso; }
+}
+function safeJson(str, fallback) {
+  if (str == null) return fallback;
+  try { const v = JSON.parse(str); return (v !== null && v !== undefined) ? v : fallback; } catch { return fallback; }
+}
+
+// ── Init ───────────────────────────────────────────────────────────────────
+(async () => {
+  try {
+    const res    = await fetch('/api/thesis/latest');
+    const thesis = await res.json();
+    if (!thesis) return;
+    currentThesisId = thesis.id;
+    fillFormFromFields({
+      ticker: thesis.ticker, company: thesis.company,
+      thesis_date: thesis.thesis_date, valuation: thesis.valuation,
+      market_belief: thesis.market_belief, my_belief: thesis.my_belief,
+      driver1: thesis.driver1, driver2: thesis.driver2, driver3: thesis.driver3,
+      what_is_priced: thesis.what_is_priced,
+      prob_bull: thesis.prob_bull, prob_base: thesis.prob_base, prob_bear: thesis.prob_bear,
+      kill_switches: thesis.kill_switches, watchlist: thesis.watchlist,
+      open_questions: thesis.open_questions,
+    });
+    document.getElementById('commit-status').textContent =
+      `Loaded v${thesis.id} · ${thesis.ticker} · ${fmtDate(thesis.created_at)}`;
+  } catch(e) { console.error(e); }
+})();
+</script>
+</body>
+</html>

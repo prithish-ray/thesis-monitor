@@ -1,0 +1,1262 @@
+import io
+import json
+import os
+import re
+import sqlite3
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
+
+from flask import Flask, Response, jsonify, render_template, request
+from groq import Groq
+from tavily import TavilyClient
+from dotenv import load_dotenv
+
+try:
+    from rank_bm25 import BM25Okapi
+    BM25_SUPPORT = True
+except ImportError:
+    BM25_SUPPORT = False
+
+load_dotenv()
+
+app = Flask(__name__)
+
+GROQ_API_KEY      = os.environ.get("GROQ_API_KEY", "")
+TAVILY_API_KEY    = os.environ.get("TAVILY_API_KEY", "")
+DB_PATH           = os.environ.get("DB_PATH", "thesis.db")
+FEEDBACK_DB_PATH  = os.environ.get("FEEDBACK_DB_PATH", "feedback.db")
+
+# ── PDF support ────────────────────────────────────────────────────────────
+try:
+    import pypdf
+    PDF_SUPPORT = True
+except ImportError:
+    PDF_SUPPORT = False
+
+
+def extract_pdf_text(file_obj) -> str:
+    """Return plain text from a PDF file object. Returns '' if pypdf missing."""
+    if not PDF_SUPPORT:
+        return ""
+    reader = pypdf.PdfReader(file_obj)
+    pages = [page.extract_text() or "" for page in reader.pages]
+    return "\n".join(pages).strip()
+
+
+# ── Database ───────────────────────────────────────────────────────────────
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    conn = get_db()
+    c = conn.cursor()
+    c.executescript("""
+        CREATE TABLE IF NOT EXISTS thesis_commits (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker          TEXT NOT NULL,
+            company         TEXT NOT NULL,
+            thesis_date     TEXT,
+            valuation       TEXT,
+            market_belief   TEXT,
+            my_belief       TEXT,
+            driver1         TEXT,
+            driver2         TEXT,
+            driver3         TEXT,
+            what_is_priced  TEXT,
+            prob_bull       REAL DEFAULT 0,
+            prob_base       REAL DEFAULT 0,
+            prob_bear       REAL DEFAULT 0,
+            kill_switches   TEXT,
+            watchlist       TEXT,
+            open_questions  TEXT,
+            version         INTEGER DEFAULT 1,
+            created_at      TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS delta_checks (
+            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            thesis_id             INTEGER NOT NULL,
+            current_price         TEXT,
+            search_queries        TEXT,
+            sources               TEXT,
+            materiality           TEXT,
+            materiality_score     INTEGER,
+            affected_driver       TEXT,
+            kill_switch_triggered TEXT,
+            evidence_summary      TEXT,
+            contrary_evidence     TEXT,
+            suggested_update      TEXT,
+            suggested_module      TEXT,
+            confidence            TEXT,
+            reasoning             TEXT,
+            user_decision         TEXT,
+            created_at            TEXT NOT NULL,
+            FOREIGN KEY (thesis_id) REFERENCES thesis_commits(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS feedback (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT,
+            category    TEXT,
+            rating      INTEGER,
+            message     TEXT,
+            created_at  TEXT NOT NULL
+        );
+    """)
+    # Migrations: add columns that may be missing from older DBs
+    for tbl, col, definition in [
+        ("thesis_commits", "thesis_date",    "TEXT"),
+        ("thesis_commits", "valuation",      "TEXT"),
+        ("thesis_commits", "delta_check_id", "INTEGER"),
+        ("delta_checks",   "current_price",  "TEXT"),
+        ("delta_checks",   "skip_web",       "INTEGER DEFAULT 0"),
+        ("delta_checks",   "doc_names",      "TEXT"),
+    ]:
+        try:
+            c.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {definition}")
+            conn.commit()
+        except Exception:
+            pass  # column already exists
+    conn.close()
+
+
+init_db()
+
+
+# ── Feedback DB (separate file — easier to persist / export independently) ─
+
+def get_feedback_db():
+    conn = sqlite3.connect(FEEDBACK_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_feedback_db():
+    conn = get_feedback_db()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS feedback (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT,
+            category    TEXT,
+            rating      INTEGER,
+            message     TEXT,
+            created_at  TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+init_feedback_db()
+
+
+# ── Groq helpers ───────────────────────────────────────────────────────────
+
+PARSE_THESIS_PROMPT = """You are an expert investment research analyst. Extract EVERY detail you can find from the text below. Be thorough and preserve full sentences, specific numbers, timeframes, and qualitative reasoning — do NOT abbreviate or summarise. The goal is to fully capture the analyst's thinking.
+
+Return ONLY a valid JSON object — no markdown fences, no commentary — with exactly these keys (use null for anything genuinely not found):
+{{
+  "ticker":          "<stock ticker symbol, e.g. BNZL.L, NVDA, SGF.SI>",
+  "company":         "<full legal company name>",
+  "thesis_date":     "<date the thesis was written, YYYY-MM-DD, or null>",
+  "valuation":       "<share price at thesis date in format 'CCY X.XX', e.g. 'GBP 8.90' or 'USD 142.50'. Only share price — not multiples. Null if not found.>",
+  "market_belief":   "<detailed 2-4 sentence explanation of what the market / consensus believes. Include specific concerns, fears, or misunderstandings. Preserve any numbers or comparisons mentioned.>",
+  "my_belief":       "<detailed 2-4 sentence explanation of the analyst's differentiated insight — what they believe the market is missing and why. Include specific numbers, catalysts, and the core mispricing argument.>",
+  "driver1":         "<first key thesis driver — write as a COMPLETE sentence explaining the catalyst, the mechanism, and why it is underappreciated. Include specific metrics if mentioned.>",
+  "driver2":         "<second key thesis driver — same standard of detail as driver1>",
+  "driver3":         "<third key thesis driver — same standard of detail as driver1>",
+  "what_is_priced":  "<detailed 2-3 sentence description of what the current valuation implies — include specific multiples, growth assumptions, margin assumptions, or scenario embedded in the price.>",
+  "prob_bull":       <integer 0-100 or null>,
+  "prob_base":       <integer 0-100 or null>,
+  "prob_bear":       <integer 0-100 or null>,
+  "kill_switches":   "<complete list of conditions that would invalidate the thesis. Each should be specific and measurable. Newline-separated. Include every kill-switch mentioned — do not truncate.>",
+  "watchlist":       "<all data points, events, or metrics to monitor. Be specific about what to look for. Newline-separated. Preserve every item mentioned.>",
+  "open_questions":  "<all unresolved questions, risks, or uncertainties flagged by the analyst. Write as complete questions. Newline-separated. Include every question mentioned.>"
+}}
+
+IMPORTANT: Prioritise completeness over brevity. If the text contains detailed reasoning, preserve it in full. Do not strip out specific numbers, dates, company names, or qualitative nuance.
+
+TEXT TO PARSE:"""
+
+
+UPDATE_THESIS_PROMPT_HEADER = """You are an expert investment research analyst. You have an existing investment thesis and a list of accepted analysis updates from subsequent delta checks. Your job is to update the thesis to intelligently incorporate those accepted insights — modifying fields that are affected, leaving unaffected fields unchanged.
+
+"""
+
+UPDATE_THESIS_PROMPT_FOOTER = """
+
+Return ONLY a valid JSON object — no markdown, no commentary — with the UPDATED thesis fields. Be specific and thorough in your updates — do not just rephrase, actually incorporate the substance of each accepted update:
+{
+  "ticker":          "<keep unchanged>",
+  "company":         "<keep unchanged>",
+  "thesis_date":     "<keep unchanged>",
+  "valuation":       "<keep unchanged>",
+  "market_belief":   "<updated text if relevant, else unchanged>",
+  "my_belief":       "<updated text if relevant, else unchanged>",
+  "driver1":         "<updated if accepted update affects this driver, else unchanged>",
+  "driver2":         "<updated if accepted update affects this driver, else unchanged>",
+  "driver3":         "<updated if accepted update affects this driver, else unchanged>",
+  "what_is_priced":  "<updated if valuation context changed, else unchanged>",
+  "prob_bull":       <integer 0-100>,
+  "prob_base":       <integer 0-100>,
+  "prob_bear":       <integer 0-100>,
+  "kill_switches":   "<updated or extended list, preserving existing + adding new ones from updates>",
+  "watchlist":       "<updated or extended list>",
+  "open_questions":  "<updated or extended list>"
+}"""
+
+
+def build_update_prompt(latest: dict, accepted_updates: list) -> str:
+    """Build UPDATE_THESIS_PROMPT by concatenation to avoid KeyError from braces in thesis text."""
+    updates_text = "\n".join(f"{i+1}. {u}" for i, u in enumerate(accepted_updates))
+    body = (
+        "CURRENT THESIS:\n"
+        f"Ticker: {latest.get('ticker','')} | Company: {latest.get('company','')}\n"
+        f"Thesis Date: {latest.get('thesis_date') or 'not specified'} | Entry Price: {latest.get('valuation') or 'not recorded'}\n"
+        f"Market Belief: {latest.get('market_belief') or '—'}\n"
+        f"My Belief: {latest.get('my_belief') or '—'}\n"
+        f"Driver 1: {latest.get('driver1') or '—'}\n"
+        f"Driver 2: {latest.get('driver2') or '—'}\n"
+        f"Driver 3: {latest.get('driver3') or '—'}\n"
+        f"What is Priced: {latest.get('what_is_priced') or '—'}\n"
+        f"Kill-Switches: {latest.get('kill_switches') or 'None specified'}\n"
+        f"Watchlist: {latest.get('watchlist') or 'None'}\n"
+        f"Open Questions: {latest.get('open_questions') or 'None'}\n"
+        "\nACCEPTED UPDATES TO INCORPORATE (apply in order):\n"
+        + updates_text
+    )
+    return UPDATE_THESIS_PROMPT_HEADER + body + UPDATE_THESIS_PROMPT_FOOTER
+
+
+ANALYSIS_PROMPT = """You are a rigorous equity research analyst. Your job is to give a definitive, opinionated assessment of whether new information materially changes an existing investment thesis. Do NOT hedge with vague language or default to "no change" when there is something real to say.
+
+CURRENT THESIS:
+Ticker: {ticker} — {company}
+Thesis date: {thesis_date}
+Entry Price / Valuation at thesis date: {valuation}
+Current Price (at time of this check): {current_price}
+
+Variant Perception:
+  Market believes: {market_belief}
+  I believe:       {my_belief}
+
+Thesis Drivers:
+  1. {driver1}
+  2. {driver2}
+  3. {driver3}
+
+What is Priced In: {what_is_priced}
+Scenario Weights: Bull {prob_bull}% / Base {prob_base}% / Bear {prob_bear}%
+Kill-Switches: {kill_switches}
+Open Questions: {open_questions}
+
+NEW INFORMATION (web sources + any uploaded documents):
+{sources_text}
+
+EVALUATION RULES — follow these strictly:
+1. Read every source. PDF content marked [PDF UPLOAD] is first-person analyst research — treat it as highest-priority context.
+2. Materiality score: 1-3 = routine/in-line, 4-6 = worth monitoring, 7-8 = meaningful shift, 9-10 = thesis-altering.
+3. Do NOT default to "Uncertain" for thin sources. If nothing has changed, say "Not Material" (score 1-3). Reserve "Uncertain" for genuinely contradictory signals only.
+4. always name a specific affected_driver — "None" only if zero drivers are referenced by any source.
+5. If current price has moved vs. entry price, comment on what that gap implies for thesis timing.
+6. suggested_update must be a SPECIFIC, ACTIONABLE sentence (e.g. "Reduce bull probability to 25% given margin miss") — never just "review the thesis".
+7. Base evidence_summary and contrary_evidence on ACTUAL content from the sources — quote specifics where possible.
+
+Return ONLY a valid JSON object — no markdown, no commentary:
+{{
+  "materiality":           "Material" | "Not Material" | "Uncertain",
+  "materiality_score":     <integer 1-10>,
+  "affected_driver":       "Driver 1" | "Driver 2" | "Driver 3" | "Multiple" | "None",
+  "kill_switch_triggered": null | "<exact kill-switch condition at risk>",
+  "evidence_summary":      "<2-3 sentences of SPECIFIC evidence from sources supporting the thesis>",
+  "contrary_evidence":     "<2-3 sentences of SPECIFIC evidence challenging or adding risk to the thesis>",
+  "suggested_update":      "<specific, actionable change — or 'No update needed' only if truly nothing changed>",
+  "suggested_module":      "No action needed" | "Bear Case Deep Dive" | "Peer Read-Across" | "Management Channel Check" | "Model Update Required" | "Sell-Side Transcript Review" | "Restate Kill-Switch Conditions",
+  "confidence":            "High" | "Medium" | "Low",
+  "reasoning":             "<2-3 sentences: overall assessment including price movement context if prices provided>"
+}}"""
+
+
+def _esc(val) -> str:
+    """Escape curly braces in user-supplied text so it's safe for str.format()."""
+    return str(val or "").replace("{", "{{").replace("}", "}}")
+
+
+def _coerce_str(val) -> str:
+    """Coerce a value to a plain string safe for SQLite TEXT columns.
+
+    Groq sometimes returns lists for newline-separated fields (kill_switches,
+    watchlist, open_questions).  Join them so SQLite doesn't raise
+    'type list is not supported'.
+    """
+    if val is None:
+        return ""
+    if isinstance(val, list):
+        return "\n".join(str(item) for item in val)
+    return str(val)
+
+
+# ── RAG helpers (BM25-based) ───────────────────────────────────────────────
+
+RAG_CHUNK_WORDS   = 150   # words per chunk
+RAG_OVERLAP_WORDS = 30    # overlap between adjacent chunks
+RAG_TOP_K         = 6     # chunks to retrieve per query
+RAG_THRESHOLD     = 200   # word count below which we skip chunking entirely
+
+
+def _tokenize(text: str) -> list[str]:
+    """Lowercase, strip punctuation, split into word tokens."""
+    return re.sub(r"[^\w\s]", " ", text.lower()).split()
+
+
+def chunk_text(text: str) -> list[str]:
+    """Split text into overlapping word-window chunks."""
+    words = text.split()
+    if len(words) <= RAG_CHUNK_WORDS:
+        return [text]
+    chunks, i = [], 0
+    while i < len(words):
+        chunks.append(" ".join(words[i : i + RAG_CHUNK_WORDS]))
+        i += RAG_CHUNK_WORDS - RAG_OVERLAP_WORDS
+    return chunks
+
+
+def bm25_top_chunks(chunks: list[str], query: str, top_k: int = RAG_TOP_K) -> list[str]:
+    """Return up to top_k chunks most relevant to query, in document order."""
+    if not chunks:
+        return []
+    corpus = [_tokenize(c) for c in chunks]
+    bm25   = BM25Okapi(corpus)
+    scores = bm25.get_scores(_tokenize(query))
+    # Pick top_k by score, then re-sort by original position for readability
+    ranked = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
+    return [chunks[i] for i in sorted(ranked)]
+
+
+def rag_retrieve(doc_text: str, queries: list[str], top_k: int = RAG_TOP_K) -> tuple[str, dict]:
+    """
+    Given the full text of one or more uploaded documents and a list of queries,
+    return (retrieved_text, stats) where retrieved_text contains only the
+    most-relevant chunks, deduplicated and joined with separators.
+
+    Falls back to the full text if BM25 is unavailable or the doc is small.
+    """
+    words = doc_text.split()
+    stats = {"chunks_total": 0, "chunks_used": 0, "words_in": len(words), "words_out": 0, "rag_applied": False}
+
+    if not BM25_SUPPORT or len(words) <= RAG_THRESHOLD:
+        stats["words_out"] = len(words)
+        return doc_text, stats
+
+    chunks = chunk_text(doc_text)
+    stats["chunks_total"] = len(chunks)
+
+    # Build a compound query across all search terms for better recall
+    compound_query = " ".join(queries)
+
+    # Retrieve per query and union the results (dedup by chunk index)
+    seen_indices: set[int] = set()
+    ordered_chunks: list[tuple[int, str]] = []
+
+    corpus  = [_tokenize(c) for c in chunks]
+    bm25    = BM25Okapi(corpus)
+    q_tok   = _tokenize(compound_query)
+    scores  = bm25.get_scores(q_tok)
+    ranked  = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
+    for idx in ranked:
+        if idx not in seen_indices:
+            seen_indices.add(idx)
+            ordered_chunks.append((idx, chunks[idx]))
+
+    # Also run per-query retrieval to catch query-specific hits
+    for q in queries:
+        q_tok = _tokenize(q)
+        scores = bm25.get_scores(q_tok)
+        ranked = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:3]
+        for idx in ranked:
+            if idx not in seen_indices:
+                seen_indices.add(idx)
+                ordered_chunks.append((idx, chunks[idx]))
+
+    # Sort back into document order
+    ordered_chunks.sort(key=lambda x: x[0])
+    retrieved = [c for _, c in ordered_chunks]
+
+    stats["chunks_used"] = len(retrieved)
+    stats["words_out"]   = sum(len(c.split()) for c in retrieved)
+    stats["rag_applied"] = True
+
+    return "\n\n···\n\n".join(retrieved), stats
+
+
+def call_groq(prompt: str, max_tokens: int = 1500) -> dict:
+    if not GROQ_API_KEY:
+        return {"error": "GROQ_API_KEY not set"}
+    client = Groq(api_key=GROQ_API_KEY)
+    resp = client.chat.completions.create(
+        model="meta-llama/llama-4-scout-17b-16e-instruct",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.1,
+        max_tokens=max_tokens,
+    )
+    raw = resp.choices[0].message.content.strip()
+    # Strip markdown code fences if present (```json ... ```)
+    if raw.startswith("```"):
+        lines = raw.split("\n")
+        raw = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+    start = raw.find("{")
+    end   = raw.rfind("}") + 1
+    if start == -1 or end == 0:
+        raise ValueError(
+            f"Groq returned no JSON object. Response was: {raw[:300]!r}"
+        )
+    return json.loads(raw[start:end])
+
+
+def build_search_queries(thesis: dict) -> list:
+    ticker      = (thesis.get("ticker")      or "").strip()
+    company     = (thesis.get("company")     or "").strip()
+    thesis_date = (thesis.get("thesis_date") or "").strip()
+
+    # Year context — current year and one prior to catch recent filings
+    current_year = datetime.now().year
+    yr           = str(current_year)
+    yr_prev      = str(current_year - 1)
+    recent_years = f"{yr_prev} {yr}"
+
+    # Exchange-specific filing terminology from ticker suffix
+    t_upper = ticker.upper()
+    if t_upper.endswith(".L"):
+        # London Stock Exchange — RNS-filed documents
+        filing_q = (f'"{company}" site:londonstockexchange.com OR site:investegate.co.uk '
+                    f'preliminary results interim results trading update {recent_years}')
+        ir_q     = (f'"{company}" results announcement investor presentation '
+                    f'annual report {recent_years}')
+    elif t_upper.endswith(".SI"):
+        # Singapore Exchange
+        filing_q = (f'"{company}" SGX announcement quarterly results '
+                    f'full year results {recent_years}')
+        ir_q     = (f'"{company}" investor presentation annual report '
+                    f'results briefing {recent_years}')
+    elif t_upper.endswith(".HK"):
+        # Hong Kong
+        filing_q = (f'"{company}" HKEX interim annual results announcement {recent_years}')
+        ir_q     = (f'"{company}" investor presentation annual report results {recent_years}')
+    elif t_upper.endswith(".AX"):
+        # ASX
+        filing_q = (f'"{company}" ASX announcement half year full year results {recent_years}')
+        ir_q     = (f'"{company}" investor presentation annual report {recent_years}')
+    elif "." not in t_upper:
+        # NYSE / NASDAQ
+        filing_q = (f'"{company}" earnings release quarterly results 10-Q 8-K '
+                    f'SEC filing {recent_years}')
+        ir_q     = (f'"{company}" investor day capital markets day '
+                    f'annual report {recent_years}')
+    else:
+        filing_q = (f'"{company}" results announcement quarterly annual {recent_years}')
+        ir_q     = (f'"{company}" investor presentation annual report {recent_years}')
+
+    # Stop words for keyword extraction from thesis text
+    _STOP = {
+        "the","a","an","and","or","but","in","on","at","to","for","of","with",
+        "is","are","was","were","be","been","have","has","had","will","would",
+        "could","should","may","might","its","it","this","that","these","those",
+        "we","our","they","their","if","as","by","from","into","which","what",
+        "when","where","who","how","than","then","more","less","very","also",
+        "not","no","any","all","some","each","both","can","do","does","did",
+        "such","due","per","via","over","under","above","below","against",
+        "between","within","without","across","through","about","around","whether",
+    }
+
+    def thesis_kw(text: str, n: int = 4) -> str:
+        """Extract n meaningful unique keywords from thesis text."""
+        words  = re.sub(r"[^\w\s]", " ", (text or "").lower()).split()
+        seen, out = set(), []
+        for w in words:
+            if len(w) >= 4 and w not in _STOP and w not in seen:
+                seen.add(w)
+                out.append(w)
+            if len(out) >= n:
+                break
+        return " ".join(out)
+
+    queries = []
+
+    # Q1 — Exchange-specific primary filing (highest signal)
+    queries.append(filing_q)
+
+    # Q2 — Investor relations / presentations
+    queries.append(ir_q)
+
+    # Q3 — Earnings call / concall transcript
+    queries.append(
+        f'"{company}" earnings call transcript results call {recent_years}'
+    )
+
+    # Q4 — Kill-switch risk monitoring (negative signal)
+    ks_lines = [l.strip() for l in (thesis.get("kill_switches") or "").split("\n") if l.strip()]
+    if ks_lines:
+        ks_kw = thesis_kw(ks_lines[0], 4)
+        queries.append(
+            f'"{company}" {ks_kw} warning downgrade deterioration {yr}'
+            if ks_kw else
+            f'"{company}" profit warning guidance reduction revenue miss {yr}'
+        )
+    else:
+        queries.append(
+            f'"{company}" profit warning guidance cut impairment write-down {yr}'
+        )
+
+    # Q5 — Watchlist item monitoring
+    wl_lines = [l.strip() for l in (thesis.get("watchlist") or "").split("\n") if l.strip()]
+    if wl_lines:
+        wl_kw = thesis_kw(wl_lines[0], 5)
+        if wl_kw:
+            queries.append(f'"{company}" {wl_kw} {yr}')
+
+    # Q6 — Open question / adverse analyst view
+    oq_lines = [l.strip() for l in (thesis.get("open_questions") or "").split("\n") if l.strip()]
+    if oq_lines and len(queries) < 6:
+        oq_kw = thesis_kw(oq_lines[0], 4)
+        if oq_kw:
+            queries.append(f'"{company}" {oq_kw} analyst report {yr}')
+
+    # Fallback Q6 — broker / credit rating adverse action
+    if len(queries) < 6:
+        queries.append(
+            f'"{company}" credit rating downgrade analyst sell '
+            f'impairment covenant breach {yr}'
+        )
+
+    return [q.strip() for q in queries if q.strip()][:6]
+
+
+# ── Global error handlers — always return JSON for /api/* routes ────────────
+
+@app.errorhandler(404)
+def not_found(e):
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "Not found", "path": request.path}), 404
+    return str(e), 404
+
+
+@app.errorhandler(500)
+def internal_error(e):
+    if request.path.startswith("/api/"):
+        app.logger.error(f"500 on {request.path}: {e}")
+        return jsonify({"error": f"Internal server error: {e}"}), 500
+    return str(e), 500
+
+
+@app.errorhandler(Exception)
+def unhandled_exception(e):
+    if request.path.startswith("/api/"):
+        app.logger.error(f"Unhandled exception on {request.path}: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+    raise e
+
+
+# ── Routes ─────────────────────────────────────────────────────────────────
+
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+
+# ── Thesis ─────────────────────────────────────────────────────────────────
+
+@app.route("/api/thesis", methods=["POST"])
+def commit_thesis():
+    d   = request.get_json(force=True)
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_db()
+    c    = conn.cursor()
+    # Auto-increment version based on existing commits
+    c.execute("SELECT COALESCE(MAX(version), 0) FROM thesis_commits")
+    next_version = (c.fetchone()[0] or 0) + 1
+    c.execute(
+        """INSERT INTO thesis_commits
+           (ticker, company, thesis_date, valuation,
+            market_belief, my_belief,
+            driver1, driver2, driver3, what_is_priced,
+            prob_bull, prob_base, prob_bear,
+            kill_switches, watchlist, open_questions, version, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            _coerce_str(d.get("ticker", "")).upper().strip(),
+            _coerce_str(d.get("company", "")).strip(),
+            _coerce_str(d.get("thesis_date")) or None,
+            _coerce_str(d.get("valuation", "")) or None,
+            _coerce_str(d.get("market_belief", "")),
+            _coerce_str(d.get("my_belief", "")),
+            _coerce_str(d.get("driver1", "")),
+            _coerce_str(d.get("driver2", "")),
+            _coerce_str(d.get("driver3", "")),
+            _coerce_str(d.get("what_is_priced", "")),
+            float(d.get("prob_bull", 0) or 0),
+            float(d.get("prob_base", 0) or 0),
+            float(d.get("prob_bear", 0) or 0),
+            _coerce_str(d.get("kill_switches", "")),
+            _coerce_str(d.get("watchlist", "")),
+            _coerce_str(d.get("open_questions", "")),
+            next_version,
+            now,
+        ),
+    )
+    thesis_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True, "thesis_id": thesis_id, "version": next_version})
+
+
+@app.route("/api/thesis/latest", methods=["GET"])
+def get_latest_thesis():
+    conn = get_db()
+    c    = conn.cursor()
+    c.execute("SELECT * FROM thesis_commits ORDER BY id DESC LIMIT 1")
+    row  = c.fetchone()
+    conn.close()
+    return jsonify(dict(row) if row else None)
+
+
+@app.route("/api/thesis/all", methods=["GET"])
+def get_all_theses():
+    conn = get_db()
+    c    = conn.cursor()
+    c.execute("SELECT * FROM thesis_commits ORDER BY id DESC")
+    rows = c.fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+# ── Document parsing ───────────────────────────────────────────────────────
+
+@app.route("/api/parse-document", methods=["POST"])
+def parse_document():
+    """Accept a PDF file upload OR raw text, return structured thesis fields."""
+    text = ""
+
+    if "file" in request.files:
+        f = request.files["file"]
+        fname = (f.filename or "").lower()
+        if fname.endswith(".pdf"):
+            if not PDF_SUPPORT:
+                return jsonify({"error": "pypdf not installed on this server"}), 400
+            try:
+                text = extract_pdf_text(io.BytesIO(f.read()))
+            except Exception as e:
+                return jsonify({"error": f"PDF extraction failed: {e}"}), 400
+            if not text:
+                return jsonify({
+                    "error": "Could not extract text from this PDF. It may be scanned (image-only). Try copying and pasting the text instead."
+                }), 400
+        else:
+            try:
+                text = f.read().decode("utf-8", errors="replace")
+            except Exception as e:
+                return jsonify({"error": f"Could not read file: {e}"}), 400
+    elif request.form.get("text"):
+        text = request.form["text"]
+    elif request.is_json:
+        text = request.get_json(force=True).get("text", "")
+
+    text = text.strip()
+    if not text:
+        return jsonify({"error": "No text content found to parse"}), 400
+
+    try:
+        # Use string concatenation — NOT .format() — so curly braces in
+        # user-supplied text (e.g. "{Revenue}") don't cause KeyError.
+        prompt = PARSE_THESIS_PROMPT + "\n\n" + text[:10000]
+        fields = call_groq(prompt, max_tokens=2000)
+    except Exception as e:
+        return jsonify({"error": f"Groq parsing error: {e}"}), 500
+
+    return jsonify({"fields": fields})
+
+
+@app.route("/api/extract-pdf-text", methods=["POST"])
+def extract_pdf_text_endpoint():
+    """Extract raw text from a PDF — used for additional context in delta check."""
+    if "file" not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+    f = request.files["file"]
+    if not PDF_SUPPORT:
+        return jsonify({"error": "pypdf not installed"}), 400
+    try:
+        text = extract_pdf_text(io.BytesIO(f.read()))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+    if not text:
+        return jsonify({"error": "Could not extract text. PDF may be image-only."}), 400
+    return jsonify({"text": text})
+
+
+@app.route("/api/parse-trail", methods=["POST"])
+def parse_trail():
+    """Accept the exported trail JSON file and return the most recent thesis commit."""
+    if "file" not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+    f = request.files["file"]
+    try:
+        data = json.loads(f.read().decode("utf-8"))
+    except Exception as e:
+        return jsonify({"error": f"Could not parse file: {e}. Make sure it is the JSON export from this app."}), 400
+
+    commits = [item for item in data if item.get("type") == "thesis_commit"]
+    if not commits:
+        return jsonify({"error": "No thesis commits found in this trail file"}), 400
+
+    latest = sorted(commits, key=lambda x: x.get("created_at", ""))[-1]
+    for key in ("type", "version"):
+        latest.pop(key, None)
+    return jsonify({"thesis": latest})
+
+
+# ── Delta check ────────────────────────────────────────────────────────────
+
+@app.route("/api/delta-check", methods=["POST"])
+def run_delta_check():
+    d             = request.get_json(force=True)
+    thesis_id     = d.get("thesis_id")
+    custom_queries = d.get("queries")
+    extra_context  = d.get("extra_context", "")
+    current_price  = d.get("current_price", "")
+    skip_web       = bool(d.get("skip_web", False))
+    doc_names      = d.get("doc_names", []) or []
+
+    conn = get_db()
+    c    = conn.cursor()
+    c.execute("SELECT * FROM thesis_commits WHERE id = ?", (thesis_id,))
+    row  = c.fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"error": "Thesis not found"}), 404
+    thesis = dict(row)
+
+    queries = custom_queries if (custom_queries and any(q.strip() for q in custom_queries)) \
+              else build_search_queries(thesis)
+    queries = [q.strip() for q in queries if q.strip()]
+
+    all_sources  = []
+    tavily_error = None
+    if not TAVILY_API_KEY and not skip_web:
+        tavily_error = "TAVILY_API_KEY is not set — web search disabled."
+    elif TAVILY_API_KEY and not skip_web:
+        tavily = TavilyClient(api_key=TAVILY_API_KEY)
+        for q in queries[:4]:
+            try:
+                results = tavily.search(query=q, max_results=5, search_depth="advanced")
+                for r in results.get("results", []):
+                    all_sources.append({
+                        "title":   r.get("title", ""),
+                        "url":     r.get("url", ""),
+                        "content": r.get("content", "")[:2000],
+                        "score":   float(r.get("score", 0)),
+                    })
+            except Exception as e:
+                err_str = str(e)
+                app.logger.warning(f"Tavily error for '{q}': {err_str}")
+                if tavily_error is None:
+                    tavily_error = err_str  # surface first error to frontend
+
+    all_sources.sort(key=lambda x: x["score"], reverse=True)
+    # Deduplicate by URL
+    seen, top_sources = set(), []
+    for s in all_sources:
+        if s["url"] not in seen:
+            seen.add(s["url"])
+            top_sources.append(s)
+        if len(top_sources) >= 8:
+            break
+
+    sources_text = "\n\n".join(
+        f"[{i+1}] {s['title']}\n{s['url']}\n{s['content']}"
+        for i, s in enumerate(top_sources)
+    ) or "No web sources retrieved."
+
+    # Uploaded documents: apply BM25 RAG to retrieve only the most query-relevant
+    # chunks, saving tokens while preserving analytical depth.
+    rag_stats = None
+    if extra_context:
+        rag_queries = [
+            f"{thesis.get('ticker','')} {thesis.get('company','')}",
+            thesis.get("driver1", ""),
+            thesis.get("driver2", ""),
+            thesis.get("driver3", ""),
+        ] + queries
+        rag_queries = [q for q in rag_queries if q.strip()]
+
+        retrieved_ctx, rag_stats = rag_retrieve(extra_context, rag_queries)
+
+        if rag_stats["rag_applied"]:
+            rag_note = (
+                f"[RAG: {rag_stats['chunks_used']} of {rag_stats['chunks_total']} chunks retrieved "
+                f"({rag_stats['words_out']:,} / {rag_stats['words_in']:,} words)]"
+            )
+            app.logger.info(f"RAG applied — {rag_note}")
+        else:
+            rag_note = "[Full document — no chunking needed]"
+
+        sources_text = (
+            f"[UPLOADED DOCUMENTS — HIGHEST-PRIORITY ANALYST CONTEXT] {rag_note}\n"
+            f"{retrieved_ctx}\n\n---\n\n"
+        ) + sources_text
+
+    valuation = thesis.get("valuation") or "not recorded"
+    curr_price_str = current_price.strip() if current_price else "not provided"
+
+    prompt = ANALYSIS_PROMPT.format(
+        ticker=_esc(thesis["ticker"]),
+        company=_esc(thesis["company"]),
+        thesis_date=_esc(thesis.get("thesis_date") or "not specified"),
+        valuation=_esc(valuation),
+        current_price=_esc(curr_price_str),
+        market_belief=_esc(thesis.get("market_belief") or "—"),
+        my_belief=_esc(thesis.get("my_belief") or "—"),
+        driver1=_esc(thesis.get("driver1") or "—"),
+        driver2=_esc(thesis.get("driver2") or "—"),
+        driver3=_esc(thesis.get("driver3") or "—"),
+        what_is_priced=_esc(thesis.get("what_is_priced") or "—"),
+        prob_bull=thesis.get("prob_bull", 0),
+        prob_base=thesis.get("prob_base", 0),
+        prob_bear=thesis.get("prob_bear", 0),
+        kill_switches=_esc(thesis.get("kill_switches") or "None specified"),
+        open_questions=_esc(thesis.get("open_questions") or "None specified"),
+        sources_text=_esc(sources_text),
+    )
+
+    result = {}
+    try:
+        result = call_groq(prompt, max_tokens=1500)
+    except Exception as e:
+        app.logger.error(f"Groq error: {e}")
+        result = {
+            "materiality": "Uncertain", "materiality_score": 5,
+            "affected_driver": "None", "kill_switch_triggered": None,
+            "evidence_summary": "Analysis unavailable.",
+            "contrary_evidence": "Analysis unavailable.",
+            "suggested_update": "Manual review required.",
+            "suggested_module": "No action needed",
+            "confidence": "Low", "reasoning": f"Error: {e}",
+        }
+
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_db()
+    c    = conn.cursor()
+    c.execute("""INSERT INTO delta_checks
+       (thesis_id, current_price, search_queries, sources,
+        materiality, materiality_score, affected_driver, kill_switch_triggered,
+        evidence_summary, contrary_evidence, suggested_update, suggested_module,
+        confidence, reasoning, skip_web, doc_names, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            thesis_id, current_price or None,
+            json.dumps(queries), json.dumps(top_sources),
+            result.get("materiality"), result.get("materiality_score"),
+            result.get("affected_driver"), result.get("kill_switch_triggered"),
+            result.get("evidence_summary"), result.get("contrary_evidence"),
+            result.get("suggested_update"), result.get("suggested_module"),
+            result.get("confidence"), result.get("reasoning"),
+            1 if skip_web else 0,
+            json.dumps(doc_names) if doc_names else None,
+            now,
+        ))
+    check_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return jsonify({
+        "check_id":         check_id,
+        "result":           result,
+        "sources":          top_sources,
+        "queries":          queries,
+        "thesis_valuation": valuation,
+        "current_price":    curr_price_str,
+        "skip_web":         skip_web,
+        "tavily_error":     tavily_error,
+        "rag_stats":        rag_stats if extra_context else None,
+    })
+
+
+@app.route("/api/delta-check/<int:check_id>/decision", methods=["POST"])
+def record_decision(check_id):
+    d = request.get_json(force=True)
+    conn = get_db()
+    conn.execute("UPDATE delta_checks SET user_decision = ? WHERE id = ?",
+                 (d.get("decision", ""), check_id))
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True})
+
+
+@app.route("/api/delta-check/<int:check_id>/accept-and-update", methods=["POST"])
+def accept_and_update(check_id):
+    """Accept a delta check suggestion and synthesise it into a new thesis version."""
+    conn = None
+    try:
+        conn = get_db()
+        c    = conn.cursor()
+
+        c.execute("SELECT * FROM delta_checks WHERE id = ?", (check_id,))
+        check = c.fetchone()
+        if not check:
+            return jsonify({"error": "Delta check not found"}), 404
+        check = dict(check)
+
+        c.execute("SELECT * FROM thesis_commits WHERE id = ?", (check["thesis_id"],))
+        thesis = c.fetchone()
+        if not thesis:
+            return jsonify({"error": "Associated thesis not found"}), 404
+        thesis = dict(thesis)
+
+        # Mark this check as accepted
+        c.execute("UPDATE delta_checks SET user_decision = 'accepted' WHERE id = ?", (check_id,))
+
+        suggested_update = (check.get("suggested_update") or "").strip()
+        new_thesis_id  = None
+        new_version    = None
+        updated_fields = None
+        synthesis_error = None
+
+        skip_synthesis = (
+            not suggested_update
+            or suggested_update in ("No update needed", "Manual review required.")
+            or not GROQ_API_KEY
+        )
+
+        if not skip_synthesis:
+            try:
+                synthesis_prompt = build_update_prompt(thesis, [suggested_update])
+                updated_fields   = call_groq(synthesis_prompt, max_tokens=1500)
+                # Always preserve identity fields from the original
+                for key in ("ticker", "company", "thesis_date"):
+                    if thesis.get(key):
+                        updated_fields[key] = thesis[key]
+                # valuation: keep original entry price unless Groq explicitly changed it
+                if not updated_fields.get("valuation"):
+                    updated_fields["valuation"] = thesis.get("valuation")
+            except Exception as e:
+                synthesis_error = str(e)
+                app.logger.warning(f"Groq synthesis in accept-and-update failed: {e}")
+                updated_fields = None
+
+        if updated_fields:
+            now = datetime.now(timezone.utc).isoformat()
+            c.execute("SELECT COALESCE(MAX(version), 0) FROM thesis_commits")
+            new_version = (c.fetchone()[0] or 0) + 1
+            c.execute(
+                """INSERT INTO thesis_commits
+                   (ticker, company, thesis_date, valuation,
+                    market_belief, my_belief,
+                    driver1, driver2, driver3, what_is_priced,
+                    prob_bull, prob_base, prob_bear,
+                    kill_switches, watchlist, open_questions,
+                    version, delta_check_id, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    _coerce_str(updated_fields.get("ticker") or thesis.get("ticker", "")).upper().strip(),
+                    _coerce_str(updated_fields.get("company") or thesis.get("company", "")).strip(),
+                    _coerce_str(updated_fields.get("thesis_date") or thesis.get("thesis_date")) or None,
+                    _coerce_str(updated_fields.get("valuation") or thesis.get("valuation")) or None,
+                    _coerce_str(updated_fields.get("market_belief")),
+                    _coerce_str(updated_fields.get("my_belief")),
+                    _coerce_str(updated_fields.get("driver1")),
+                    _coerce_str(updated_fields.get("driver2")),
+                    _coerce_str(updated_fields.get("driver3")),
+                    _coerce_str(updated_fields.get("what_is_priced")),
+                    float(updated_fields.get("prob_bull") or thesis.get("prob_bull", 0) or 0),
+                    float(updated_fields.get("prob_base") or thesis.get("prob_base", 0) or 0),
+                    float(updated_fields.get("prob_bear") or thesis.get("prob_bear", 0) or 0),
+                    _coerce_str(updated_fields.get("kill_switches")),
+                    _coerce_str(updated_fields.get("watchlist")),
+                    _coerce_str(updated_fields.get("open_questions")),
+                    new_version,
+                    check_id,
+                    now,
+                ),
+            )
+            new_thesis_id = c.lastrowid
+
+        conn.commit()
+        return jsonify({
+            "success":         True,
+            "new_thesis_id":   new_thesis_id,
+            "version":         new_version,
+            "updated_fields":  updated_fields,
+            "synthesis_error": synthesis_error,
+        })
+
+    except Exception as e:
+        app.logger.error(f"accept_and_update error (check {check_id}): {e}", exc_info=True)
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        return jsonify({"error": f"Server error: {e}"}), 500
+
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+@app.route("/api/fetch-price/<path:ticker>")
+def fetch_price(ticker):
+    """Fetch the latest market price for a ticker from Yahoo Finance (no API key needed)."""
+    encoded = urllib.parse.quote(ticker.upper().strip())
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded}?interval=1d&range=1d"
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; ThesisMonitor/1.0)"},
+        )
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            data = json.loads(resp.read())
+        result = data.get("chart", {}).get("result")
+        if not result:
+            return jsonify({"error": "No data returned for this ticker"}), 404
+        meta     = result[0]["meta"]
+        price    = meta.get("regularMarketPrice") or meta.get("previousClose")
+        currency = (meta.get("currency") or "").upper()
+        if not price:
+            return jsonify({"error": "Price not available"}), 404
+        # Format: "GBP 8.90" — divide by 100 for GBp (pence-denominated tickers)
+        if currency == "GBp":
+            price    = price / 100
+            currency = "GBP"
+        formatted = f"{currency} {price:.2f}" if currency else f"{price:.2f}"
+        return jsonify({"price": formatted, "raw": price, "currency": currency})
+    except urllib.error.HTTPError as e:
+        return jsonify({"error": f"Yahoo Finance returned {e.code}"}), 502
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Trail ──────────────────────────────────────────────────────────────────
+
+@app.route("/api/trail", methods=["GET"])
+def get_trail():
+    conn = get_db()
+    c    = conn.cursor()
+    c.execute("SELECT * FROM thesis_commits ORDER BY created_at ASC")
+    theses = [{**dict(r), "type": "thesis_commit"} for r in c.fetchall()]
+    c.execute("SELECT * FROM delta_checks ORDER BY created_at ASC")
+    checks = [{**dict(r), "type": "delta_check"} for r in c.fetchall()]
+    conn.close()
+    trail = sorted(theses + checks, key=lambda x: x.get("created_at") or "")
+    return jsonify(trail)
+
+
+@app.route("/api/trail/export", methods=["GET"])
+def export_trail():
+    conn = get_db()
+    c    = conn.cursor()
+    c.execute("SELECT * FROM thesis_commits ORDER BY created_at ASC")
+    theses = [{**dict(r), "type": "thesis_commit"} for r in c.fetchall()]
+    c.execute("SELECT * FROM delta_checks ORDER BY created_at ASC")
+    checks = [{**dict(r), "type": "delta_check"} for r in c.fetchall()]
+    conn.close()
+    trail   = sorted(theses + checks, key=lambda x: x.get("created_at") or "")
+    payload = json.dumps(trail, indent=2, default=str)
+    ts      = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+    ticker  = theses[-1]["ticker"].replace(".", "-") if theses else "trail"
+    fname   = f"thesis_trail_{ticker}_{ts}.json"
+    return Response(payload, mimetype="application/json",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+@app.route("/api/import-trail", methods=["POST"])
+def import_trail_full():
+    """Import a complete trail JSON: restore all history, synthesise accepted updates into latest thesis."""
+    if "file" not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+    f = request.files["file"]
+    try:
+        data = json.loads(f.read().decode("utf-8"))
+    except Exception as e:
+        return jsonify({"error": f"Could not parse file: {e}"}), 400
+
+    commits = [x for x in data if x.get("type") == "thesis_commit"]
+    checks  = [x for x in data if x.get("type") == "delta_check"]
+    if not commits:
+        return jsonify({"error": "No thesis commits found in trail file"}), 400
+
+    commits.sort(key=lambda x: x.get("created_at", ""))
+    checks.sort(key=lambda x: x.get("created_at", ""))
+
+    conn = get_db()
+    c    = conn.cursor()
+
+    # Clear existing data and re-import
+    c.execute("DELETE FROM delta_checks")
+    c.execute("DELETE FROM thesis_commits")
+    try:
+        c.execute("DELETE FROM sqlite_sequence WHERE name IN ('thesis_commits','delta_checks')")
+    except Exception:
+        pass
+
+    id_map = {}
+    for commit in commits:
+        old_id  = commit.get("id")
+        version = commit.get("version") or 1
+        c.execute("""INSERT INTO thesis_commits
+            (ticker, company, thesis_date, valuation,
+             market_belief, my_belief, driver1, driver2, driver3, what_is_priced,
+             prob_bull, prob_base, prob_bear,
+             kill_switches, watchlist, open_questions, version, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (commit.get("ticker",""), commit.get("company",""),
+             commit.get("thesis_date"), commit.get("valuation"),
+             commit.get("market_belief",""), commit.get("my_belief",""),
+             commit.get("driver1",""), commit.get("driver2",""), commit.get("driver3",""),
+             commit.get("what_is_priced",""),
+             commit.get("prob_bull", 0), commit.get("prob_base", 0), commit.get("prob_bear", 0),
+             commit.get("kill_switches",""), commit.get("watchlist",""),
+             commit.get("open_questions",""), version, commit.get("created_at","")))
+        new_id = c.lastrowid
+        if old_id is not None:
+            id_map[old_id] = new_id
+
+    for check in checks:
+        old_tid = check.get("thesis_id")
+        new_tid = id_map.get(old_tid, old_tid)
+        c.execute("""INSERT INTO delta_checks
+            (thesis_id, current_price, search_queries, sources,
+             materiality, materiality_score, affected_driver, kill_switch_triggered,
+             evidence_summary, contrary_evidence, suggested_update, suggested_module,
+             confidence, reasoning, user_decision, skip_web, doc_names, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (new_tid, check.get("current_price"),
+             check.get("search_queries", "[]"), check.get("sources", "[]"),
+             check.get("materiality"), check.get("materiality_score"),
+             check.get("affected_driver"), check.get("kill_switch_triggered"),
+             check.get("evidence_summary"), check.get("contrary_evidence"),
+             check.get("suggested_update"), check.get("suggested_module"),
+             check.get("confidence"), check.get("reasoning"),
+             check.get("user_decision"),
+             1 if check.get("skip_web") else 0,
+             check.get("doc_names"),
+             check.get("created_at", "")))
+
+    conn.commit()
+    c.execute("SELECT * FROM thesis_commits ORDER BY id DESC LIMIT 1")
+    latest = dict(c.fetchone())
+    c.execute("SELECT COALESCE(MAX(version),0) FROM thesis_commits")
+    max_version = c.fetchone()[0] or 1
+    conn.close()
+
+    # Collect accepted suggestions to synthesise into updated thesis
+    accepted_updates = [
+        ch.get("suggested_update", "")
+        for ch in checks
+        if ch.get("user_decision") == "accepted" and ch.get("suggested_update")
+        and ch.get("suggested_update") not in ("No update needed", "Manual review required.")
+    ]
+
+    updated_fields = latest  # default: return latest as-is
+    if accepted_updates and GROQ_API_KEY:
+        try:
+            synthesis_prompt = build_update_prompt(latest, accepted_updates)
+            updated_fields = call_groq(synthesis_prompt, max_tokens=1500)
+            # Always keep ticker/company/date from original
+            for key in ("ticker", "company", "thesis_date", "valuation"):
+                if latest.get(key):
+                    updated_fields[key] = latest[key]
+        except Exception as e:
+            app.logger.warning(f"Groq synthesis failed: {e}")
+            updated_fields = latest
+
+    return jsonify({
+        "thesis":           updated_fields,
+        "max_version":      max_version,
+        "imported_commits": len(commits),
+        "imported_checks":  len(checks),
+        "accepted_updates": accepted_updates,
+    })
+
+
+@app.route("/api/clear-trail", methods=["POST"])
+def clear_trail():
+    """Delete all thesis and delta check data — fresh start."""
+    conn = get_db()
+    conn.execute("DELETE FROM delta_checks")
+    conn.execute("DELETE FROM thesis_commits")
+    # Reset autoincrement counters
+    conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('thesis_commits','delta_checks')")
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True})
+
+
+# ── Feedback ───────────────────────────────────────────────────────────────
+
+@app.route("/api/feedback", methods=["POST"])
+def submit_feedback():
+    d   = request.get_json(force=True)
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_feedback_db()
+    conn.execute(
+        "INSERT INTO feedback (name, category, rating, message, created_at) VALUES (?,?,?,?,?)",
+        (
+            d.get("name", "Anonymous"),
+            d.get("category", "general"),
+            int(d.get("rating", 0)) if d.get("rating") else None,
+            d.get("message", ""),
+            now,
+        ),
+    )
+    conn.commit()
+    conn.close()
+    app.logger.info(
+        f"[FEEDBACK] from={d.get('name','Anon')} cat={d.get('category')} "
+        f"rating={d.get('rating')} msg={d.get('message','')[:80]}"
+    )
+    return jsonify({"success": True})
+
+
+@app.route("/api/feedback/export", methods=["GET"])
+def export_feedback():
+    """Download all feedback as a CSV file — visit this URL once a day to collect responses."""
+    import csv, io as _io
+    conn = get_feedback_db()
+    c    = conn.cursor()
+    c.execute("SELECT id, created_at, name, category, rating, message FROM feedback ORDER BY created_at ASC")
+    rows = c.fetchall()
+    conn.close()
+
+    buf = _io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["id", "submitted_at", "name", "category", "rating", "message"])
+    for row in rows:
+        writer.writerow(list(row))
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+    return Response(
+        buf.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="feedback_{ts}.csv"'},
+    )
+
+
+@app.route("/api/feedback/count", methods=["GET"])
+def feedback_count():
+    """Return number of feedback entries — lightweight check without downloading the full CSV."""
+    conn = get_feedback_db()
+    c    = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM feedback")
+    n = c.fetchone()[0]
+    conn.close()
+    return jsonify({"count": n})
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(debug=True, host="0.0.0.0", port=port)
