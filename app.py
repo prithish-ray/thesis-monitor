@@ -399,7 +399,7 @@ def call_groq(prompt: str, max_tokens: int = 1500) -> dict:
         return {"error": "GROQ_API_KEY not set"}
     client = Groq(api_key=GROQ_API_KEY)
     resp = client.chat.completions.create(
-        model="meta-llama/llama-4-scout-17b-16e-instruct",
+        model="openai/gpt-oss-120b",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.1,
         max_tokens=max_tokens,
